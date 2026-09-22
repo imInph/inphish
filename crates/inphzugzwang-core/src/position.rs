@@ -41,6 +41,17 @@ pub struct Position {
     history: Vec<State>,
 }
 
+impl Clone for Position {
+    fn clone(&self) -> Self {
+        let mut history = Vec::with_capacity(self.history.len().saturating_add(256));
+        history.extend_from_slice(&self.history);
+        Self {
+            state: self.state,
+            history,
+        }
+    }
+}
+
 impl Position {
     pub fn startpos() -> Self {
         Self::from_fen(START_FEN).expect("built-in starting FEN is valid")

@@ -318,6 +318,13 @@ impl MoveList {
         true
     }
 
+    pub fn sort_by_key(&mut self, mut score: impl FnMut(Move) -> i32) {
+        for entry in &mut self.moves[..self.len] {
+            entry.score = score(entry.mv);
+        }
+        self.moves[..self.len].sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
+    }
+
     pub const fn len(&self) -> usize {
         self.len
     }

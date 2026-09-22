@@ -7,8 +7,25 @@ name = "inphish"
 version = "0.1.0"
 dependencies = [
  "inphzugzwang-core",
+ "inphzugzwang-eval",
+ "inphzugzwang-search",
 ]
 
 [[package]]
 name = "inphzugzwang-core"
 version = "0.1.0"
+
+[[package]]
+name = "inphzugzwang-eval"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-core",
+]
+
+[[package]]
+name = "inphzugzwang-search"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-core",
+ "inphzugzwang-eval",
+]
