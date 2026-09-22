@@ -960,14 +960,13 @@ impl Position {
             ^ castling_hash(old_rights)
             ^ castling_hash(self.state.castling);
         if old_ep.is_some() {
-            let mut prior = Self {
+            let prior = Self {
                 state: *previous,
                 history: Vec::new(),
             };
             if let Some(ep) = prior.hashable_ep() {
                 key ^= hash_word(0x2000 + ep.file() as u64);
             }
-            prior.history.clear();
         }
         if let Some(ep) = self.hashable_ep() {
             key ^= hash_word(0x2000 + ep.file() as u64);
