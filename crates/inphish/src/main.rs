@@ -4,6 +4,10 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use inphzugzwang_core::{perft, Position, Square};
+use inphzugzwang_eval::evaluate;
+
+mod bench;
+mod uci;
 
 fn main() -> ExitCode {
     match run() {
@@ -17,7 +21,19 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    let command = args.next().ok_or_else(usage)?;
+    let Some(command) = args.next() else {
+        return uci::run().map_err(|error| error.to_string());
+    };
+    if command == "bench" {
+        let depth = args
+            .next()
+            .map_or(Ok(4), |text| text.parse::<u8>())
+            .map_err(|_| usage())?;
+        if args.next().is_some() || depth == 0 {
+            return Err(usage());
+        }
+        return bench::run(depth);
+    }
     let depth = if command == "perft" || command == "divide" {
         Some(
             args.next()
@@ -74,13 +90,15 @@ fn run() -> Result<(), String> {
             println!("FEN: {}", position.fen());
             println!("Key: {:016x}", position.key());
             println!("Checkers: {:016x}", position.checkers().0);
+            println!("Eval: {}", evaluate(&position));
             io::stdout().flush().map_err(|error| error.to_string())?;
         }
+        "eval" => println!("{}", evaluate(&position)),
         _ => return Err(usage()),
     }
     Ok(())
 }
 
 fn usage() -> String {
-    "usage: inphish <perft <depth>|divide <depth>|d> [--fen <FEN>]".to_owned()
+    "usage: inphish [bench [depth]|perft <depth>|divide <depth>|d|eval] [--fen <FEN>]".to_owned()
 }

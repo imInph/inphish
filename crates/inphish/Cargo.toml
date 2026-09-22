@@ -6,3 +6,5 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 inphzugzwang-core = { path = "../inphzugzwang-core" }
+inphzugzwang-eval = { path = "../inphzugzwang-eval" }
+inphzugzwang-search = { path = "../inphzugzwang-search" }
