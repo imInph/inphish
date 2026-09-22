@@ -1,4 +1,4 @@
-# Foundation testing
+# Engine testing
 
 Run the normal checks:
 
@@ -23,3 +23,13 @@ cargo +nightly fuzz run fen -- -max_total_time=30
 ```
 
 The engine itself builds on stable Rust. The fuzz harness is an independent workspace and does not add a runtime dependency to the engine.
+
+The release test suite includes a UCI subprocess smoke test and a depth-4 bench signature check. Run them separately with:
+
+```sh
+cargo test --release -p inphish --test uci
+cargo test --release -p inphish --test bench
+target/release/inphish bench 4
+```
+
+The depth-4 signature is `1445613` nodes. It must match in debug and release builds and on supported platforms. Search strength has not yet been SPRT-tested.

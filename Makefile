@@ -1,6 +1,6 @@
 EXE ?= target/release/inphish
 
-.PHONY: all test perft
+.PHONY: all test perft bench
 
 all:
 	cargo build --release
@@ -13,3 +13,6 @@ test:
 
 perft:
 	cargo test --release -p inphzugzwang-core --test perft -- --ignored
+
+bench: all
+	$(EXE) bench

@@ -3,4 +3,5 @@
 ## Unreleased
 
 - Foundation: board state, legal move generation, Chess960 castling, position hashing, rule detection, and perft diagnostics.
-- Bench signature and Elo measurement are not available before search is implemented.
+- Playing engine: UCI input and search threads, iterative-deepening alpha-beta, quiescence, material and piece-square evaluation, clock control, and a deterministic bench.
+- Depth-4 bench signature: 1445613 nodes. No SPRT result yet.
