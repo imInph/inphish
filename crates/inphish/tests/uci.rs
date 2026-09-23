@@ -64,7 +64,10 @@ fn uci_smoke() {
         .recv_timeout(Duration::from_millis(100))
         .is_err());
     engine.send("uci");
-    assert_eq!(engine.until("id name"), "id name inphish 0.1.0");
+    assert_eq!(
+        engine.until("id name"),
+        concat!("id name inphish ", env!("CARGO_PKG_VERSION"))
+    );
     assert_eq!(
         engine.until("option name Hash"),
         "option name Hash type spin default 16 min 1 max 1024"

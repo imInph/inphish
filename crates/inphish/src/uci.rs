@@ -130,7 +130,7 @@ impl Engine {
         };
         match command {
             "uci" => {
-                write_line(out, "id name inphish 0.1.0")?;
+                write_line(out, concat!("id name inphish ", env!("CARGO_PKG_VERSION")))?;
                 write_line(out, "id author Kaevo")?;
                 write_line(
                     out,

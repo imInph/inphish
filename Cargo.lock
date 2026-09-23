@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "inphish"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "inphzugzwang-core",
  "inphzugzwang-eval",

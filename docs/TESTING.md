@@ -32,11 +32,13 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench 4
 ```
 
-The depth-4 signature is `686260` nodes. It must match in debug and release builds and on supported platforms.
+The depth-4 signature is `499138` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
 The transposition-table SPRT compared the 16 MiB default table against the preceding hashless revision at 8+0.08 and one thread per engine. It accepted H1 on [0, 5] Elo after 536 paired-opening games: 350 wins, 141 losses, 45 draws, LLR 2.95 against ±2.94 bounds. The estimated gain was 143.04 ± 29.00 Elo (95%). All counted games terminated normally; fastchess also wrote one normal, unpaired game to the PGN while stopping.
+
+The killer-move SPRT compared two quiet killers per ply against the preceding transposition-table revision at 8+0.08, Hash 16 MiB, and one thread per engine. It accepted H1 on [0, 5] Elo after 1,804 paired-opening games: 948 wins, 769 losses, 87 draws, LLR 2.95 against ±2.94 bounds. The estimated gain was 34.59 ± 13.10 Elo (95%). All games terminated normally. The bench signature changed from `686260` to `499138`.
 
 ## Search changes
 

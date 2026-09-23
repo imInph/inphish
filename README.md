@@ -4,6 +4,10 @@ inphish is a UCI chess engine written in Rust. It is intended to run inside a ch
 
 Run the executable with no arguments to speak UCI over standard input and output. Add that executable as a UCI engine in a chess GUI; inphish has no graphical interface of its own.
 
+## Preview release
+
+Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases), extract it, and select `inphish` (`inphish.exe` on Windows) as the UCI executable in your chess GUI. The preview provides Linux x86-64, Windows x86-64, macOS Apple Silicon, and macOS Intel binaries. It requires no book or network file. This is a Phase 3 preview, not the finished engine; absolute playing strength is unmeasured.
+
 ## Build
 
 Use stable Rust:
@@ -18,7 +22,7 @@ The executable is `target/release/inphish` (`inphish.exe` on Windows). Building 
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-The current playing engine uses iterative deepening, principal variation search, a transposition table, capture/evasion quiescence, and material plus piece-square evaluation. UCI options are `Hash` (16 MiB by default), `Clear Hash`, and `Move Overhead` (20 ms by default). Standard chess is the UCI default. Chess960 board rules and perft are implemented, but the full Chess960 UCI game option is not yet available.
+The current playing engine uses iterative deepening, principal variation search, a transposition table, killer move ordering, capture/evasion quiescence, and material plus piece-square evaluation. UCI options are `Hash` (16 MiB by default), `Clear Hash`, and `Move Overhead` (20 ms by default). Standard chess is the UCI default. Chess960 board rules and perft are implemented, but the full Chess960 UCI game option is not yet available.
 
 ## Diagnostic commands
 
@@ -33,7 +37,7 @@ target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/P
 
 `perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument.
 
-Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `686260` nodes. Search changes have been measured by SPRT against preceding revisions; absolute playing strength remains unmeasured.
+Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `499138` nodes. Search changes have been measured by SPRT against preceding revisions; absolute playing strength remains unmeasured.
 
 ## License
 
