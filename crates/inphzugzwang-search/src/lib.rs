@@ -59,6 +59,7 @@ struct Search<'a> {
     nodes: u64,
     seldepth: usize,
     aborted: bool,
+    killers: [[Move; 2]; MAX_PLY],
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
 }
@@ -92,6 +93,7 @@ pub fn search_with_table(
         nodes: 0,
         seldepth: 0,
         aborted: false,
+        killers: [[Move::NULL; 2]; MAX_PLY],
         pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
         pv_len: [0; MAX_PLY],
     };
@@ -140,7 +142,7 @@ pub fn search_with_table(
         let iteration_start_nodes = worker.nodes;
         let mut best_move_nodes = 0;
         let mut ordered = candidates.clone();
-        ordered.sort_by_key(|&mv| -worker.move_score(mv, best));
+        ordered.sort_by_key(|&mv| -worker.move_score(mv, best, 0));
         for (index, mv) in ordered.into_iter().enumerate() {
             if worker.should_stop() {
                 break;
@@ -333,7 +335,7 @@ impl Search<'_> {
             }
         }
         let static_eval = hit.map_or_else(|| evaluate(&self.position), |record| record.eval);
-        self.order(&mut moves, tt_move);
+        self.order(&mut moves, tt_move, ply);
         let mut best = -INF;
         let mut best_move = Move::NULL;
         for (index, mv) in moves.iter().enumerate() {
@@ -364,6 +366,10 @@ impl Search<'_> {
                 self.pv_len[ply] = child_len + 1;
             }
             if alpha >= beta {
+                if is_quiet(mv) && self.killers[ply][0] != mv {
+                    self.killers[ply][1] = self.killers[ply][0];
+                    self.killers[ply][0] = mv;
+                }
                 break;
             }
         }
@@ -415,7 +421,7 @@ impl Search<'_> {
             }
             alpha = alpha.max(stand_pat);
         }
-        self.order(&mut moves, None);
+        self.order(&mut moves, None, ply);
         for mv in moves.iter() {
             if !in_check && mv.flag() & 4 == 0 && mv.promotion().is_none() {
                 continue;
@@ -442,9 +448,17 @@ impl Search<'_> {
         alpha
     }
 
-    fn move_score(&self, mv: Move, preferred: Option<Move>) -> i32 {
+    fn move_score(&self, mv: Move, preferred: Option<Move>, ply: usize) -> i32 {
         if Some(mv) == preferred {
             return 100_000;
+        }
+        if is_quiet(mv) {
+            if mv == self.killers[ply][0] {
+                return 2;
+            }
+            if mv == self.killers[ply][1] {
+                return 1;
+            }
         }
         let attacker = self
             .position
@@ -467,9 +481,13 @@ impl Search<'_> {
         gain + promotion
     }
 
-    fn order(&self, moves: &mut MoveList, preferred: Option<Move>) {
-        moves.sort_by_key(|mv| self.move_score(mv, preferred));
+    fn order(&self, moves: &mut MoveList, preferred: Option<Move>, ply: usize) {
+        moves.sort_by_key(|mv| self.move_score(mv, preferred, ply));
     }
+}
+
+fn is_quiet(mv: Move) -> bool {
+    mv.flag() & 4 == 0 && mv.promotion().is_none()
 }
 
 pub fn uci_score(score: i32) -> String {
