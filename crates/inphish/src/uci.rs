@@ -6,7 +6,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use inphzugzwang_core::{Color, Position};
-use inphzugzwang_eval::evaluate;
 use inphzugzwang_search::{search, uci_score, Control, Info, Limits};
 
 use crate::bench;
@@ -191,35 +190,15 @@ impl Engine {
     ) -> io::Result<()> {
         if limits.immediate {
             let legal = self.position.legal_moves();
-            let mut best = None;
-            let mut best_score = i32::MIN;
-            let assess = limits
-                .hard
-                .is_some_and(|hard| hard >= Duration::from_millis(10));
-            for mv in legal.iter() {
-                if limits.searchmoves_only && !limits.searchmoves.contains(&mv) {
-                    continue;
-                }
-                if !assess {
-                    best = Some(mv);
-                    break;
-                }
-                self.position.make(mv);
-                let score = -evaluate(&self.position);
-                self.position.unmake();
-                if score > best_score {
-                    best = Some(mv);
-                    best_score = score;
-                }
-            }
+            let best = legal
+                .iter()
+                .find(|mv| !limits.searchmoves_only || limits.searchmoves.contains(mv));
             let label = best.map_or_else(
                 || "0000".to_owned(),
                 |mv| self.position.format_move(mv, self.chess960),
             );
             let score = if best.is_none() && self.position.checkers().0 != 0 {
                 "mate 0".to_owned()
-            } else if assess && best.is_some() {
-                format!("cp {best_score}")
             } else {
                 "cp 0".to_owned()
             };
@@ -389,7 +368,7 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
                 binc
             };
             if let Some(remaining) = clock {
-                limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(180);
+                limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(300);
                 let safe = remaining.saturating_sub(overhead).max(1);
                 let target = (safe / movestogo).saturating_add(increment.saturating_mul(3) / 4);
                 let soft = target.clamp(1, (safe.saturating_mul(2) / 5).max(1));
@@ -517,6 +496,8 @@ mod tests {
     #[test]
     fn tiny_clocks_and_large_values_are_bounded() {
         let position = Position::startpos();
+        assert!(parse_go(&["wtime", "320"], &position, 20, false).immediate);
+        assert!(!parse_go(&["wtime", "321"], &position, 20, false).immediate);
         for words in [
             &["wtime", "0", "winc", "0"][..],
             &[
