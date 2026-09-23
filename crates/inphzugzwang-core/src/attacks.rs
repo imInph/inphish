@@ -365,13 +365,11 @@ fn fast_pext_available() -> bool {
             return false;
         }
         // AMD family 17h and earlier implement PEXT too slowly for this lookup.
-        // SAFETY: CPUID is supported on every x86_64 processor.
-        let vendor = unsafe { std::arch::x86_64::__cpuid(0) };
+        let vendor = std::arch::x86_64::__cpuid(0);
         if (vendor.ebx, vendor.edx, vendor.ecx) != (0x6874_7541, 0x6974_6e65, 0x444d_4163) {
             return true;
         }
-        // SAFETY: CPUID leaf 1 is supported on every x86_64 processor.
-        let leaf = unsafe { std::arch::x86_64::__cpuid(1) };
+        let leaf = std::arch::x86_64::__cpuid(1);
         let base = (leaf.eax >> 8) & 15;
         let ext = (leaf.eax >> 20) & 255;
         base + if base == 15 { ext } else { 0 } >= 0x19
