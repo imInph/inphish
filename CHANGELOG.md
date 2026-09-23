@@ -1,5 +1,10 @@
 # inphzugzwang changelog
 
+## 0.1.0-preview.2 - 2026-09-23
+
+- Fix preview publishing by checking out the annotated tag before creating the release.
+- No engine behavior change; depth-4 bench signature remains 499138 nodes.
+
 ## 0.1.0-preview.1 - 2026-09-23
 
 - Foundation: board state, legal move generation, Chess960 castling, position hashing, rule detection, and perft diagnostics.
