@@ -1,0 +1,69 @@
+name: Preview release
+
+on:
+  push:
+    tags:
+      - 'v0.1.0-preview.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+          - os: windows-latest
+            platform: windows-x86_64
+          - os: macos-latest
+            platform: macos-aarch64
+          - os: macos-15-intel
+            platform: macos-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --release
+      - run: cargo build --release
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cp LICENSE README.md target/release/
+          tar -czf "inphish-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" -C target/release inphish LICENSE README.md
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/release/inphish.exe, LICENSE, README.md -DestinationPath "inphish-${{ github.ref_name }}-${{ matrix.platform }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            inphish-*.tar.gz
+            inphish-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
+          gh release create "${{ github.ref_name }}" dist/* --verify-tag --prerelease --latest=false --title "inphish 0.1.0 preview 1" --notes-from-tag
