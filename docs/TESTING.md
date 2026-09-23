@@ -33,3 +33,13 @@ target/release/inphish bench 4
 ```
 
 The depth-4 signature is `1445613` nodes. It must match in debug and release builds and on supported platforms. Search strength has not yet been SPRT-tested.
+
+## Search changes
+
+Run each search or evaluation change against the previous revision with fastchess and a balanced EPD opening set. The runner builds both committed revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
+
+```sh
+tools/sprt.sh HEAD HEAD^ /path/to/openings.epd /tmp/inphish-sprt.pgn
+```
+
+The default test uses 8+0.08 seconds, one search thread per engine, a 0 to 5 Elo SPRT, and four concurrent games. `SPRT_TC`, `SPRT_ROUNDS`, `SPRT_CONCURRENCY`, `SPRT_ELO0`, `SPRT_ELO1`, and `SPRT_FASTCHESS` override the defaults. Use `SPRT_ELO0=-5 SPRT_ELO1=0` for a non-regression test. Keep the fastchess terminal output and PGN with the result; record the LLR, bounds, W/L/D counts, time control, and bench signature in the strength-changing commit.
