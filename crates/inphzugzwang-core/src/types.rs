@@ -234,6 +234,14 @@ pub struct Move(pub(crate) u16);
 impl Move {
     pub const NULL: Self = Self(0);
 
+    pub const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
+
     pub const fn new(from: Square, to: Square, flag: MoveFlag) -> Self {
         Self(from.0 as u16 | ((to.0 as u16) << 6) | ((flag as u16) << 12))
     }

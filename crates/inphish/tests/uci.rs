@@ -65,7 +65,19 @@ fn uci_smoke() {
         .is_err());
     engine.send("uci");
     assert_eq!(engine.until("id name"), "id name inphish 0.1.0");
+    assert_eq!(
+        engine.until("option name Hash"),
+        "option name Hash type spin default 16 min 1 max 1024"
+    );
+    assert_eq!(
+        engine.until("option name Clear Hash"),
+        "option name Clear Hash type button"
+    );
     assert_eq!(engine.until("uciok"), "uciok");
+    engine.send("setoption name Hash value 1");
+    engine.send("setoption name Clear Hash");
+    engine.send("isready");
+    assert_eq!(engine.until("readyok"), "readyok");
     engine.send("position startpos moves e2e4 e7e5");
     engine.send("go depth 3");
     let best = engine.until("bestmove ");

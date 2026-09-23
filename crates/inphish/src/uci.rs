@@ -6,7 +6,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use inphzugzwang_core::{Color, Position};
-use inphzugzwang_search::{search, uci_score, Control, Info, Limits};
+use inphzugzwang_search::{
+    search_with_table, uci_score, Control, Info, Limits, TranspositionTable,
+};
 
 use crate::bench;
 
@@ -32,6 +34,8 @@ struct Engine {
     pending: Option<Limits>,
     quitting: bool,
     overhead: u64,
+    hash_mb: u32,
+    hash: Arc<TranspositionTable>,
     chess960: bool,
     debug: bool,
 }
@@ -59,6 +63,8 @@ pub fn run() -> io::Result<()> {
         pending: None,
         quitting: false,
         overhead: 20,
+        hash_mb: 16,
+        hash: Arc::new(TranspositionTable::new(16).expect("default hash allocation failed")),
         chess960: false,
         debug: false,
     };
@@ -130,12 +136,15 @@ impl Engine {
                     out,
                     "option name Move Overhead type spin default 20 min 0 max 5000",
                 )?;
+                write_line(out, "option name Hash type spin default 16 min 1 max 1024")?;
+                write_line(out, "option name Clear Hash type button")?;
                 write_line(out, "uciok")?;
             }
             "isready" => write_line(out, "readyok")?,
             "ucinewgame" => {
                 self.position = Position::startpos();
                 self.stop();
+                self.clear_hash();
             }
             "position" => {
                 if let Some(position) = parse_position(&words[1..], self.chess960) {
@@ -224,11 +233,12 @@ impl Engine {
             ponderhit: control.ponderhit.clone(),
         };
         let worker_tx = tx.clone();
+        let hash = self.hash.clone();
         let handle = thread::Builder::new()
             .name("inphish-search".to_owned())
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
-                let result = search(position, limits, &worker_control, |info| {
+                let result = search_with_table(position, limits, &worker_control, &hash, |info| {
                     let _ = worker_tx.send(Event::Info(id, info));
                 });
                 let _ = worker_tx.send(Event::Done(id, result));
@@ -268,6 +278,22 @@ impl Engine {
             if let Ok(ms) = value.parse::<u64>() {
                 self.overhead = ms.min(5000);
             }
+        } else if name == "hash" {
+            if let Ok(megabytes) = value.parse::<u32>() {
+                let megabytes = megabytes.clamp(1, 1024);
+                if let Some(table) = TranspositionTable::new(megabytes) {
+                    self.hash_mb = megabytes;
+                    self.hash = Arc::new(table);
+                }
+            }
+        } else if name == "clear hash" {
+            self.clear_hash();
+        }
+    }
+
+    fn clear_hash(&mut self) {
+        if let Some(table) = TranspositionTable::new(self.hash_mb) {
+            self.hash = Arc::new(table);
         }
     }
 }
@@ -404,8 +430,8 @@ fn format_info(position: &Position, chess960: bool, info: &Info) -> String {
     let millis = info.elapsed.as_millis() as u64;
     let nps = info.nodes.saturating_mul(1000) / millis.max(1);
     let mut line = format!(
-        "info depth {} seldepth {} multipv 1 score {} nodes {} nps {} hashfull 0 tbhits 0 time {} pv",
-        info.depth, info.seldepth, uci_score(info.score), info.nodes, nps, millis
+        "info depth {} seldepth {} multipv 1 score {} nodes {} nps {} hashfull {} tbhits 0 time {} pv",
+        info.depth, info.seldepth, uci_score(info.score), info.nodes, nps, info.hashfull, millis
     );
     let mut after = position.clone();
     for &mv in &info.pv {

@@ -5,6 +5,11 @@ use std::time::{Duration, Instant};
 use inphzugzwang_core::{Move, MoveList, PieceType, Position};
 use inphzugzwang_eval::{evaluate, VALUES};
 
+mod tt;
+
+pub use tt::TranspositionTable;
+use tt::{Bound, Record};
+
 const MAX_PLY: usize = 128;
 const MATE: i32 = 30_000;
 const INF: i32 = 32_000;
@@ -30,6 +35,7 @@ pub struct Info {
     pub score: i32,
     pub nodes: u64,
     pub elapsed: Duration,
+    pub hashfull: u16,
     pub pv: Vec<Move>,
 }
 
@@ -47,6 +53,7 @@ struct Search<'a> {
     position: Position,
     limits: Limits,
     control: &'a Control,
+    tt: &'a TranspositionTable,
     started: Instant,
     timed_started: Option<Instant>,
     nodes: u64,
@@ -60,14 +67,27 @@ pub fn search(
     position: Position,
     limits: Limits,
     control: &Control,
+    on_info: impl FnMut(Info),
+) -> Result {
+    let tt = TranspositionTable::new(16).expect("default hash allocation failed");
+    search_with_table(position, limits, control, &tt, on_info)
+}
+
+pub fn search_with_table(
+    position: Position,
+    limits: Limits,
+    control: &Control,
+    tt: &TranspositionTable,
     mut on_info: impl FnMut(Info),
 ) -> Result {
+    tt.next_generation();
     let started = limits.started.unwrap_or_else(Instant::now);
     let mut worker = Search {
         position,
         timed_started: if limits.ponder { None } else { Some(started) },
         limits,
         control,
+        tt,
         started,
         nodes: 0,
         seldepth: 0,
@@ -87,6 +107,7 @@ pub fn search(
         score: 0,
         nodes: 0,
         elapsed: Duration::ZERO,
+        hashfull: 0,
         pv: fallback.into_iter().collect(),
     };
     if candidates.is_empty() {
@@ -167,6 +188,7 @@ pub fn search(
             score: best_score,
             nodes: worker.nodes,
             elapsed: worker.started.elapsed(),
+            hashfull: worker.tt.hashfull(),
             pv: worker.pv[0][..worker.pv_len[0]].to_vec(),
         };
         on_info(completed.clone());
@@ -204,6 +226,7 @@ pub fn search(
     completed.nodes = worker.nodes;
     completed.seldepth = worker.seldepth;
     completed.elapsed = worker.started.elapsed();
+    completed.hashfull = worker.tt.hashfull();
     on_info(completed.clone());
     Result {
         best,
@@ -286,8 +309,33 @@ impl Search<'_> {
         if self.position.is_fifty_move_draw() {
             return 0;
         }
-        self.order(&mut moves);
+        let key = self.position.key();
+        let pv_node = beta - alpha > 1;
+        let original_alpha = alpha;
+        let hit = self.tt.probe(key, ply);
+        let tt_move = hit.and_then(|record| {
+            if record.mv != Move::NULL && self.position.is_pseudo_legal(record.mv) {
+                Some(record.mv)
+            } else {
+                None
+            }
+        });
+        if !pv_node {
+            if let Some(record) = hit.filter(|record| {
+                record.depth >= depth as u8 && (record.mv == Move::NULL || tt_move.is_some())
+            }) {
+                match record.bound {
+                    Bound::Exact => return record.score,
+                    Bound::Lower if record.score >= beta => return record.score,
+                    Bound::Upper if record.score <= alpha => return record.score,
+                    _ => {}
+                }
+            }
+        }
+        let static_eval = hit.map_or_else(|| evaluate(&self.position), |record| record.eval);
+        self.order(&mut moves, tt_move);
         let mut best = -INF;
+        let mut best_move = Move::NULL;
         for (index, mv) in moves.iter().enumerate() {
             self.position.make(mv);
             let mut score = if index == 0 {
@@ -304,6 +352,7 @@ impl Search<'_> {
             }
             if score > best {
                 best = score;
+                best_move = mv;
             }
             if score > alpha {
                 alpha = score;
@@ -318,6 +367,25 @@ impl Search<'_> {
                 break;
             }
         }
+        self.tt.store(
+            key,
+            ply,
+            Record {
+                mv: best_move,
+                score: best,
+                eval: static_eval,
+                depth: depth as u8,
+                bound: if best >= beta {
+                    Bound::Lower
+                } else if best <= original_alpha {
+                    Bound::Upper
+                } else {
+                    Bound::Exact
+                },
+                pv: pv_node,
+                age: 0,
+            },
+        );
         best
     }
 
@@ -347,7 +415,7 @@ impl Search<'_> {
             }
             alpha = alpha.max(stand_pat);
         }
-        self.order(&mut moves);
+        self.order(&mut moves, None);
         for mv in moves.iter() {
             if !in_check && mv.flag() & 4 == 0 && mv.promotion().is_none() {
                 continue;
@@ -399,8 +467,8 @@ impl Search<'_> {
         gain + promotion
     }
 
-    fn order(&self, moves: &mut MoveList) {
-        moves.sort_by_key(|mv| self.move_score(mv, None));
+    fn order(&self, moves: &mut MoveList, preferred: Option<Move>) {
+        moves.sort_by_key(|mv| self.move_score(mv, preferred));
     }
 }
 
