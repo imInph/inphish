@@ -120,13 +120,20 @@ pub fn search(
         let mut best_move_nodes = 0;
         let mut ordered = candidates.clone();
         ordered.sort_by_key(|&mv| -worker.move_score(mv, best));
-        for mv in ordered {
+        for (index, mv) in ordered.into_iter().enumerate() {
             if worker.should_stop() {
                 break;
             }
             let before = worker.nodes;
             worker.position.make(mv);
-            let score = -worker.negamax(depth as i32 - 1, -INF, -alpha, 1);
+            let mut score = if index == 0 {
+                -worker.negamax(depth as i32 - 1, -INF, -alpha, 1)
+            } else {
+                -worker.negamax(depth as i32 - 1, -alpha - 1, -alpha, 1)
+            };
+            if index > 0 && score > alpha && !worker.aborted {
+                score = -worker.negamax(depth as i32 - 1, -INF, -alpha, 1);
+            }
             worker.position.unmake();
             if worker.aborted {
                 break;
@@ -281,9 +288,16 @@ impl Search<'_> {
         }
         self.order(&mut moves);
         let mut best = -INF;
-        for mv in moves.iter() {
+        for (index, mv) in moves.iter().enumerate() {
             self.position.make(mv);
-            let score = -self.negamax(depth - 1, -beta, -alpha, ply + 1);
+            let mut score = if index == 0 {
+                -self.negamax(depth - 1, -beta, -alpha, ply + 1)
+            } else {
+                -self.negamax(depth - 1, -alpha - 1, -alpha, ply + 1)
+            };
+            if index > 0 && score > alpha && score < beta && !self.aborted {
+                score = -self.negamax(depth - 1, -beta, -alpha, ply + 1);
+            }
             self.position.unmake();
             if self.aborted {
                 return 0;

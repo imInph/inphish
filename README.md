@@ -18,7 +18,7 @@ The executable is `target/release/inphish` (`inphish.exe` on Windows). Building 
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-The current playing engine uses iterative deepening, alpha-beta search, capture/evasion quiescence, and material plus piece-square evaluation. It has one UCI option, `Move Overhead` (20 ms by default). Standard chess is the UCI default. Chess960 board rules and perft are implemented, but the full Chess960 UCI game option is not yet available.
+The current playing engine uses iterative deepening, principal variation search, capture/evasion quiescence, and material plus piece-square evaluation. It has one UCI option, `Move Overhead` (20 ms by default). Standard chess is the UCI default. Chess960 board rules and perft are implemented, but the full Chess960 UCI game option is not yet available.
 
 ## Diagnostic commands
 
@@ -33,7 +33,7 @@ target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/P
 
 `perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument.
 
-Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `1445613` nodes. Playing strength has not been measured by SPRT.
+Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `1030398` nodes. An SPRT measured the PVS change against the previous revision; absolute playing strength remains unmeasured.
 
 ## License
 
