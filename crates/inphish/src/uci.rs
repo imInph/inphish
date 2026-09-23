@@ -368,7 +368,7 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
                 binc
             };
             if let Some(remaining) = clock {
-                limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(300);
+                limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(500);
                 let safe = remaining.saturating_sub(overhead).max(1);
                 let target = (safe / movestogo).saturating_add(increment.saturating_mul(3) / 4);
                 let soft = target.clamp(1, (safe.saturating_mul(2) / 5).max(1));
@@ -496,8 +496,8 @@ mod tests {
     #[test]
     fn tiny_clocks_and_large_values_are_bounded() {
         let position = Position::startpos();
-        assert!(parse_go(&["wtime", "320"], &position, 20, false).immediate);
-        assert!(!parse_go(&["wtime", "321"], &position, 20, false).immediate);
+        assert!(parse_go(&["wtime", "520"], &position, 20, false).immediate);
+        assert!(!parse_go(&["wtime", "521"], &position, 20, false).immediate);
         for words in [
             &["wtime", "0", "winc", "0"][..],
             &[
