@@ -48,6 +48,8 @@ Correctness checks remain required. For search and evaluation changes, run a sho
 
 The first bounded match after adding the tapered evaluation and selective search, with the short-clock fix, played 20 games against Morstilia 6.0.0 at 1+0.01, Hash 16 MiB, one thread, two concurrent games, and ten openings from the development EPD set with colors swapped: 20 wins, 0 losses, 0 draws, all terminated normally. A MaiEngine batch at 1+0.01 on the preceding build ended with 17 of 20 games lost on time by MaiEngine, which spends about 50 ms per move regardless of its clock, so that control does not measure play against it.
 
+The release matches used revision `9bb9790` at 10+0.1, Hash 16 MiB, one thread, two concurrent games, and the same ten openings with colors swapped. Against Morstilia 6.0.0: 19 wins, 0 losses, 1 draw (19.5 of 20). Against MaiEngine: 18 wins, 1 loss, 1 draw (18.5 of 20). All 40 games ended by checkmate or threefold repetition, with no time losses, crashes, or illegal moves. The 0.1.0 version bump that followed changes only the reported version.
+
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 
 ## Optional SPRT

@@ -79,4 +79,4 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
-          gh release create "${{ github.ref_name }}" dist/* --verify-tag --title "inphish ${GITHUB_REF_NAME#v}" --notes-from-tag
+          gh release create "${{ github.ref_name }}" dist/* --verify-tag --latest --title "inphish v0.1.0 — Bait n Mate" --notes-from-tag

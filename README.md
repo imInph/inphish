@@ -6,7 +6,7 @@ Run the executable with no arguments to speak UCI over standard input and output
 
 ## Releases
 
-Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases), extract it, and select `inphish` (`inphish.exe` on Windows) as the UCI executable in your chess GUI. Release archives are built for Linux x86-64, Windows x86-64, macOS Apple Silicon, and macOS Intel. No book, network file, or runtime download is required. The current public version is a preview; absolute playing strength is unmeasured.
+Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases), extract it, and select `inphish` (`inphish.exe` on Windows) as the UCI executable in your chess GUI. Release archives are built for Linux x86-64, Windows x86-64, macOS Apple Silicon, and macOS Intel. No book, network file, or runtime download is required. Pick `macos-aarch64` for Apple Silicon Macs and `macos-x86_64` for Intel Macs. On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` before a GUI can start it.
 
 ## Build
 
@@ -38,6 +38,14 @@ target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/P
 `perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument.
 
 Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `95766` nodes. Some earlier search changes were measured by SPRT against preceding revisions; later changes are checked with short bounded matches recorded in the testing notes. Absolute playing strength remains unmeasured.
+
+## Strength
+
+No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches at 10+0.1 with Hash 16 MiB, one thread, and ten openings played with colors swapped: 19 wins, 0 losses, 1 draw against Morstilia 6.0.0, and 18 wins, 1 loss, 1 draw against MaiEngine. These are small informal samples, not a rating.
+
+## Limitations
+
+inphish is single-threaded and has no opening book, endgame tablebases, NNUE, pondering, MultiPV, or strength limiting. Chess960 is not offered as a UCI option.
 
 ## Acknowledgements
 
