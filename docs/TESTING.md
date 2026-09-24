@@ -24,7 +24,7 @@ cargo +nightly fuzz run fen -- -max_total_time=30
 
 The engine itself builds on stable Rust. The fuzz harness is an independent workspace and does not add a runtime dependency to the engine.
 
-The release test suite includes a UCI subprocess smoke test and a depth-4 bench signature check. Run them separately with:
+The release test suite includes UCI subprocess smoke and edge-case tests (ponder and ponderhit, illegal moves in `position`, `go` before `position`, node and movetime limits, quit during an infinite search) and a depth-4 bench signature check. Run them separately with:
 
 ```sh
 cargo test --release -p inphish --test uci
@@ -49,6 +49,18 @@ Correctness checks remain required. For search and evaluation changes, run a sho
 The first bounded match after adding the tapered evaluation and selective search, with the short-clock fix, played 20 games against Morstilia 6.0.0 at 1+0.01, Hash 16 MiB, one thread, two concurrent games, and ten openings from the development EPD set with colors swapped: 20 wins, 0 losses, 0 draws, all terminated normally. A MaiEngine batch at 1+0.01 on the preceding build ended with 17 of 20 games lost on time by MaiEngine, which spends about 50 ms per move regardless of its clock, so that control does not measure play against it.
 
 The release matches used revision `9bb9790` at 10+0.1, Hash 16 MiB, one thread, two concurrent games, and the same ten openings with colors swapped. Against Morstilia 6.0.0: 19 wins, 0 losses, 1 draw (19.5 of 20). Against MaiEngine: 18 wins, 1 loss, 1 draw (18.5 of 20). All 40 games ended by checkmate or threefold repetition, with no time losses, crashes, or illegal moves. The 0.1.0 version bump that followed changes only the reported version.
+
+`tests/openings/balanced.epd` holds 28 common, roughly equal opening positions of eight to ten plies, each labelled with its ECO code and move sequence; a test checks that every line parses. `tools/match.sh` builds a git revision in a temporary directory, freezes the binary, and plays it against a named opponent through fastchess on that book with colors swapped:
+
+```sh
+MATCH_FASTCHESS=/path/to/fastchess \
+MATCH_OPPONENT_OPTIONS="option.Hash=16 option.Threads=1 option.BookEnabled=false" \
+tools/match.sh main Morstilia-6 /path/to/morstilia
+```
+
+It defaults to 20 games at 1+0.01 with two concurrent games and always stops at 20 minutes of wall clock. It refuses a slower control, more than 40 games, or more concurrency unless `MATCH_OWNER_APPROVED=yes` records a specific owner approval. The PGN, log, bench line, and frozen binary go to `~/inphish-evidence/`, outside the repository. The script prints the score and a count of game terminations. An earlier revision can be the opponent by passing its frozen binary as the opponent command.
+
+The first batch on this book, revision `f52f88a` (0.1.0) at 1+0.01, scored 19 wins, 0 losses, 1 draw against Morstilia 6.0.0 (19 checkmates, one threefold repetition) and 20 wins against MaiEngine, of which 18 were MaiEngine time forfeits and 2 checkmates. MaiEngine results at 1+0.01 therefore say little about its play.
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 

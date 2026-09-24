@@ -293,3 +293,17 @@ fn piece_accessors_split_by_colour() {
     let pawns_only = Position::from_fen("4k3/p7/8/8/8/8/P7/4K3 w - - 0 1").unwrap();
     assert!(!pawns_only.has_non_pawn_material(Color::White));
 }
+
+#[test]
+fn balanced_opening_book_parses() {
+    let book = include_str!("../../../tests/openings/balanced.epd");
+    let mut count = 0;
+    for line in book.lines().filter(|line| !line.trim().is_empty()) {
+        let fields: Vec<&str> = line.split_whitespace().take(4).collect();
+        let fen = format!("{} 0 1", fields.join(" "));
+        let position = Position::from_fen(&fen).expect(line);
+        assert!(!position.legal_moves().is_empty(), "{line}");
+        count += 1;
+    }
+    assert!(count >= 20);
+}
