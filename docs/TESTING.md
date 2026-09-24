@@ -32,7 +32,7 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench 4
 ```
 
-The depth-4 signature is `499138` nodes. It must match in debug and release builds and on supported platforms.
+The depth-4 signature is `487865` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
@@ -40,12 +40,20 @@ The transposition-table SPRT compared the 16 MiB default table against the prece
 
 The killer-move SPRT compared two quiet killers per ply against the preceding transposition-table revision at 8+0.08, Hash 16 MiB, and one thread per engine. It accepted H1 on [0, 5] Elo after 1,804 paired-opening games: 948 wins, 769 losses, 87 draws, LLR 2.95 against ±2.94 bounds. The estimated gain was 34.59 ± 13.10 Elo (95%). All games terminated normally. The bench signature changed from `686260` to `499138`.
 
-## Search changes
+The direct tactical move generator was compared with the preceding revision at 8+0.08, Hash 16 MiB, and one thread per engine. The run was stopped after 980 games: 471 wins, 460 losses, 49 draws, LLR 0.08 against ±2.94 bounds on [0, 5] Elo. It was inconclusive, so no strength gain is claimed. The bench signature changed from `499138` to `487865`.
 
-Run each search or evaluation change against the previous revision with fastchess and a balanced EPD opening set. The runner builds both committed revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
+## Development matches
+
+Correctness checks remain required. For search and evaluation changes, run a short paired match after a meaningful batch of work or at a phase boundary. On the development Mac, use at most 40 games at 1+0.01 with two concurrent games and a 20-minute wall-clock cap. Record completed games, wins, losses, draws, time control, and any abnormal termination. Stop at the cap rather than extending the run. A small match is a regression signal, not an Elo measurement or proof that a change is stronger.
+
+Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
+
+## Optional SPRT
+
+The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
 
 ```sh
 tools/sprt.sh HEAD HEAD^ /path/to/openings.epd /tmp/inphish-sprt.pgn
 ```
 
-The default test uses 8+0.08 seconds, one search thread per engine, a 0 to 5 Elo SPRT, and four concurrent games. `SPRT_TC`, `SPRT_ROUNDS`, `SPRT_CONCURRENCY`, `SPRT_ELO0`, `SPRT_ELO1`, and `SPRT_FASTCHESS` override the defaults. Use `SPRT_ELO0=-5 SPRT_ELO1=0` for a non-regression test. Keep the fastchess terminal output and PGN with the result; record the LLR, bounds, W/L/D counts, time control, and bench signature in the strength-changing commit.
+The default test uses 8+0.08 seconds, one search thread per engine, a 0 to 5 Elo SPRT, and four concurrent games. `SPRT_TC`, `SPRT_ROUNDS`, `SPRT_CONCURRENCY`, `SPRT_ELO0`, `SPRT_ELO1`, and `SPRT_FASTCHESS` override the defaults. Use `SPRT_ELO0=-5 SPRT_ELO1=0` for a non-regression test. Keep the fastchess terminal output and PGN with the result. If the test reaches a decision, record the LLR, bounds, W/L/D counts, time control, and bench signature; otherwise label the result inconclusive.
