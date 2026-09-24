@@ -3,161 +3,61 @@ use inphzugzwang_core::{
     PieceType, Position, Square,
 };
 
+mod weights;
+
+use weights::WEIGHTS;
+
 /// Rough exchange values used by move ordering and pruning margins, not by the evaluation.
 pub const VALUES: [i32; 6] = [100, 320, 330, 500, 900, 0];
 
-const MG_VALUES: [i32; 6] = [82, 337, 365, 477, 1025, 0];
-const EG_VALUES: [i32; 6] = [94, 281, 297, 512, 936, 0];
 const PHASE_WEIGHTS: [i32; 6] = [0, 1, 1, 2, 4, 0];
-const MAX_PHASE: i32 = 24;
+pub const MAX_PHASE: i32 = 24;
+pub const TEMPO: i32 = 10;
 
-// Piece-square tables from Ronald Friederich's PeSTO, published on the Chess Programming
-// Wiki. They are laid out from a8 to h1 as printed there, so a white piece on square s
-// reads index s ^ 56 and a black piece reads index s.
-#[rustfmt::skip]
-const MG_TABLES: [[i32; 64]; 6] = [
-    [
-          0,   0,   0,   0,   0,   0,   0,   0,
-         98, 134,  61,  95,  68, 126,  34, -11,
-         -6,   7,  26,  31,  65,  56,  25, -20,
-        -14,  13,   6,  21,  23,  12,  17, -23,
-        -27,  -2,  -5,  12,  17,   6,  10, -25,
-        -26,  -4,  -4, -10,   3,   3,  33, -12,
-        -35,  -1, -20, -23, -15,  24,  38, -22,
-          0,   0,   0,   0,   0,   0,   0,   0,
-    ],
-    [
-        -167, -89, -34, -49,  61, -97, -15, -107,
-         -73, -41,  72,  36,  23,  62,   7,  -17,
-         -47,  60,  37,  65,  84, 129,  73,   44,
-          -9,  17,  19,  53,  37,  69,  18,   22,
-         -13,   4,  16,  13,  28,  19,  21,   -8,
-         -23,  -9,  12,  10,  19,  17,  25,  -16,
-         -29, -53, -12,  -3,  -1,  18, -14,  -19,
-        -105, -21, -58, -33, -17, -28, -19,  -23,
-    ],
-    [
-        -29,   4, -82, -37, -25, -42,   7,  -8,
-        -26,  16, -18, -13,  30,  59,  18, -47,
-        -16,  37,  43,  40,  35,  50,  37,  -2,
-         -4,   5,  19,  50,  37,  37,   7,  -2,
-         -6,  13,  13,  26,  34,  12,  10,   4,
-          0,  15,  15,  15,  14,  27,  18,  10,
-          4,  15,  16,   0,   7,  21,  33,   1,
-        -33,  -3, -14, -21, -13, -12, -39, -21,
-    ],
-    [
-         32,  42,  32,  51,  63,   9,  31,  43,
-         27,  32,  58,  62,  80,  67,  26,  44,
-         -5,  19,  26,  36,  17,  45,  61,  16,
-        -24, -11,   7,  26,  24,  35,  -8, -20,
-        -36, -26, -12,  -1,   9,  -7,   6, -23,
-        -45, -25, -16, -17,   3,   0,  -5, -33,
-        -44, -16, -20,  -9,  -1,  11,  -6, -71,
-        -19, -13,   1,  17,  16,   7, -37, -26,
-    ],
-    [
-        -28,   0,  29,  12,  59,  44,  43,  45,
-        -24, -39,  -5,   1, -16,  57,  28,  54,
-        -13, -17,   7,   8,  29,  56,  47,  57,
-        -27, -27, -16, -16,  -1,  17,  -2,   1,
-         -9, -26,  -9, -10,  -2,  -4,   3,  -3,
-        -14,   2, -11,  -2,  -5,   2,  14,   5,
-        -35,  -8,  11,   2,   8,  15,  -3,   1,
-         -1, -18,  -9,  10, -15, -25, -31, -50,
-    ],
-    [
-        -65,  23,  16, -15, -56, -34,   2,  13,
-         29,  -1, -20,  -7,  -8,  -4, -38, -29,
-         -9,  24,   2, -16, -20,   6,  22, -22,
-        -17, -20, -12, -27, -30, -25, -14, -36,
-        -49,  -1, -27, -39, -46, -44, -33, -51,
-        -14, -14, -22, -46, -44, -30, -15, -27,
-          1,   7,  -8, -64, -43, -16,   9,   8,
-        -15,  36,  12, -54,   8, -28,  24,  14,
-    ],
-];
+// Weight indices. Piece-square entries start from Ronald Friederich's PeSTO tables, published
+// on the Chess Programming Wiki and laid out from a8 to h1, so a white piece on square s
+// reads entry s ^ 56 and a black piece reads entry s.
+const MATERIAL: usize = 0;
+const PST: usize = MATERIAL + 6;
+// Indexed by relative rank; the piece-square tables already reward advancement, so these
+// carry only the part that depends on no enemy pawn being able to stop the pawn.
+const PASSED: usize = PST + 6 * 64;
+const DOUBLED: usize = PASSED + 8;
+const ISOLATED: usize = DOUBLED + 1;
+const BISHOP_PAIR: usize = ISOLATED + 1;
+const ROOK_OPEN_FILE: usize = BISHOP_PAIR + 1;
+const ROOK_SEMI_OPEN_FILE: usize = ROOK_OPEN_FILE + 1;
+const MOBILITY: usize = ROOK_SEMI_OPEN_FILE + 1;
+pub const KING_ZONE: usize = MOBILITY + 4;
+const SHIELD_PAWN: usize = KING_ZONE + 6;
+const THREAT_BY_PAWN: usize = SHIELD_PAWN + 1;
+const THREAT_BY_MINOR: usize = THREAT_BY_PAWN + 1;
+const THREAT_BY_ROOK: usize = THREAT_BY_MINOR + 1;
+const HANGING: usize = THREAT_BY_ROOK + 1;
+const KNIGHT_OUTPOST: usize = HANGING + 1;
+const ROOK_SEVENTH: usize = KNIGHT_OUTPOST + 1;
+const PASSED_KING_DISTANCE: usize = ROOK_SEVENTH + 1;
+pub const PARAMS: usize = PASSED_KING_DISTANCE + 1;
 
-#[rustfmt::skip]
-const EG_TABLES: [[i32; 64]; 6] = [
-    [
-          0,   0,   0,   0,   0,   0,   0,   0,
-        178, 173, 158, 134, 147, 132, 165, 187,
-         94, 100,  85,  67,  56,  53,  82,  84,
-         32,  24,  13,   5,  -2,   4,  17,  17,
-         13,   9,  -3,  -7,  -7,  -8,   3,  -1,
-          4,   7,  -6,   1,   0,  -5,  -1,  -8,
-         13,   8,   8,  10,  13,   0,   2,  -7,
-          0,   0,   0,   0,   0,   0,   0,   0,
-    ],
-    [
-        -58, -38, -13, -28, -31, -27, -63, -99,
-        -25,  -8, -25,  -2,  -9, -25, -24, -52,
-        -24, -20,  10,   9,  -1,  -9, -19, -41,
-        -17,   3,  22,  22,  22,  11,   8, -18,
-        -18,  -6,  16,  25,  16,  17,   4, -18,
-        -23,  -3,  -1,  15,  10,  -3, -20, -22,
-        -42, -20, -10,  -5,  -2, -20, -23, -44,
-        -29, -51, -23, -15, -22, -18, -50, -64,
-    ],
-    [
-        -14, -21, -11,  -8,  -7,  -9, -17, -24,
-         -8,  -4,   7, -12,  -3, -13,  -4, -14,
-          2,  -8,   0,  -1,  -2,   6,   0,   4,
-         -3,   9,  12,   9,  14,  10,   3,   2,
-         -6,   3,  13,  19,   7,  10,  -3,  -9,
-        -12,  -3,   8,  10,  13,   3,  -7, -15,
-        -14, -18,  -7,  -1,   4,  -9, -15, -27,
-        -23,  -9, -23,  -5,  -9, -16,  -5, -17,
-    ],
-    [
-         13,  10,  18,  15,  12,  12,   8,   5,
-         11,  13,  13,  11,  -3,   3,   8,   3,
-          7,   7,   7,   5,   4,  -3,  -5,  -3,
-          4,   3,  13,   1,   2,   1,  -1,   2,
-          3,   5,   8,   4,  -5,  -6,  -8, -11,
-         -4,   0,  -5,  -1,  -7, -12,  -8, -16,
-         -6,  -6,   0,   2,  -9,  -9, -11,  -3,
-         -9,   2,   3,  -1,  -5, -13,   4, -20,
-    ],
-    [
-         -9,  22,  22,  27,  27,  19,  10,  20,
-        -17,  20,  32,  41,  58,  25,  30,   0,
-        -20,   6,   9,  49,  47,  35,  19,   9,
-          3,  22,  24,  45,  57,  40,  57,  36,
-        -18,  28,  19,  47,  31,  34,  39,  23,
-        -16, -27,  15,   6,   9,  17,  10,   5,
-        -22, -23, -30, -16, -16, -23, -36, -32,
-        -33, -28, -22, -43,  -5, -32, -20, -41,
-    ],
-    [
-        -74, -35, -18, -18, -11,  15,   4, -17,
-        -12,  17,  14,  17,  17,  38,  23,  11,
-         10,  17,  23,  15,  20,  45,  44,  13,
-         -8,  22,  24,  27,  26,  33,  26,   3,
-        -18,  -4,  21,  24,  27,  23,   9, -11,
-        -19,  -3,  11,  21,  23,  16,   7,  -9,
-        -27, -11,   4,  13,  14,   4,  -5, -17,
-        -53, -34, -21, -11, -28, -14, -24, -43,
-    ],
-];
-
-// Indexed by relative rank. The PeSTO pawn tables already reward advancement in general,
-// so these only add the part that depends on no enemy pawn being able to stop the pawn.
-const PASSED_MG: [i32; 8] = [0, 0, 5, 10, 20, 35, 55, 0];
-const PASSED_EG: [i32; 8] = [0, 10, 15, 25, 45, 75, 120, 0];
-const DOUBLED: (i32, i32) = (-10, -20);
-const ISOLATED: (i32, i32) = (-10, -12);
-const BISHOP_PAIR: (i32, i32) = (25, 50);
-const ROOK_OPEN_FILE: (i32, i32) = (25, 10);
-const ROOK_SEMI_OPEN_FILE: (i32, i32) = (12, 6);
-// Per reachable square beyond a typical count, so an average piece contributes about zero.
-const MOBILITY: [(i32, i32, i32); 4] = [(4, 4, 4), (5, 5, 6), (2, 4, 6), (1, 2, 12)];
-const KING_ZONE_ATTACK: [i32; 6] = [0, 20, 20, 40, 80, 0];
-const SHIELD_PAWN: i32 = 12;
-const TEMPO: i32 = 10;
+// Mobility counts reachable squares beyond a typical number, so an average piece is neutral.
+const TYPICAL_MOBILITY: [i32; 4] = [4, 6, 6, 12];
 
 const FILE_A: u64 = 0x0101_0101_0101_0101;
+const PIECES: [PieceType; 6] = [
+    PieceType::Pawn,
+    PieceType::Knight,
+    PieceType::Bishop,
+    PieceType::Rook,
+    PieceType::Queen,
+    PieceType::King,
+];
+
+/// Receives each evaluation feature for one side. The engine sums weights directly; the
+/// tuner records the features so it can refit the weights.
+trait Sink {
+    fn add(&mut self, index: usize, count: i32);
+    fn king_attack(&mut self, by_kind: [i32; 6], attackers: i32);
+}
 
 #[derive(Clone, Copy, Default)]
 struct Score {
@@ -165,11 +65,35 @@ struct Score {
     eg: i32,
 }
 
-impl Score {
-    fn add(&mut self, (mg, eg): (i32, i32)) {
-        self.mg += mg;
-        self.eg += eg;
+impl Sink for Score {
+    fn add(&mut self, index: usize, count: i32) {
+        self.mg += WEIGHTS[index].0 * count;
+        self.eg += WEIGHTS[index].1 * count;
     }
+
+    fn king_attack(&mut self, by_kind: [i32; 6], attackers: i32) {
+        let (mg, eg) = king_attack_weight(by_kind, |index| WEIGHTS[index]);
+        self.mg += mg * attackers / 4;
+        self.eg += eg * attackers / 4;
+    }
+}
+
+fn king_attack_weight(by_kind: [i32; 6], weight: impl Fn(usize) -> (i32, i32)) -> (i32, i32) {
+    by_kind
+        .iter()
+        .enumerate()
+        .fold((0, 0), |(mg, eg), (kind, &count)| {
+            let (w_mg, w_eg) = weight(KING_ZONE + kind);
+            (mg + w_mg * count, eg + w_eg * count)
+        })
+}
+
+#[derive(Default)]
+struct Attacks {
+    pawns: u64,
+    minors: u64,
+    rooks: u64,
+    all: u64,
 }
 
 fn file_mask(file: u8) -> u64 {
@@ -198,42 +122,50 @@ fn forward_span(color: Color, square: Square, files: u64) -> u64 {
     ahead & files
 }
 
+fn relative_rank(color: Color, square: Square) -> u8 {
+    match color {
+        Color::White => square.rank(),
+        Color::Black => 7 - square.rank(),
+    }
+}
+
+fn distance(a: Square, b: Square) -> i32 {
+    i32::from(a.file().abs_diff(b.file()).max(a.rank().abs_diff(b.rank())))
+}
+
 fn pawn_attack_span(color: Color, pawns: Bitboard) -> u64 {
     pawns
         .into_iter()
         .fold(0, |acc, square| acc | pawn_attacks(color, square).0)
 }
 
-fn evaluate_side(position: &Position, color: Color, score: &mut Score) {
+fn evaluate_side(position: &Position, color: Color, sink: &mut impl Sink) -> Attacks {
     let enemy = color.other();
     let occupied = position.occupied();
     let own_pieces = position.side_pieces(color);
     let own_pawns = position.pieces(color, PieceType::Pawn);
     let enemy_pawns = position.pieces(enemy, PieceType::Pawn);
     let enemy_pawn_attacks = pawn_attack_span(enemy, enemy_pawns);
+    let own_king = position.king(color);
     let enemy_king = position.king(enemy);
     let enemy_king_zone = king_attacks(enemy_king).0 | enemy_king.bit().0;
-    let mut king_attack_weight = 0;
+    let mut attacks = Attacks {
+        pawns: pawn_attack_span(color, own_pawns),
+        ..Attacks::default()
+    };
+    attacks.all = attacks.pawns | king_attacks(own_king).0;
+    let mut king_attackers_by_kind = [0; 6];
     let mut king_attackers = 0;
 
-    for kind in [
-        PieceType::Pawn,
-        PieceType::Knight,
-        PieceType::Bishop,
-        PieceType::Rook,
-        PieceType::Queen,
-        PieceType::King,
-    ] {
+    for kind in PIECES {
         for square in position.pieces(color, kind) {
             let table_index = match color {
                 Color::White => square.index() ^ 56,
                 Color::Black => square.index(),
             };
-            score.add((
-                MG_VALUES[kind.index()] + MG_TABLES[kind.index()][table_index],
-                EG_VALUES[kind.index()] + EG_TABLES[kind.index()][table_index],
-            ));
-            let attacks = match kind {
+            sink.add(MATERIAL + kind.index(), 1);
+            sink.add(PST + kind.index() * 64 + table_index, 1);
+            let reach = match kind {
                 PieceType::Knight => knight_attacks(square),
                 PieceType::Bishop => bishop_attacks(square, occupied),
                 PieceType::Rook => rook_attacks(square, occupied),
@@ -242,23 +174,48 @@ fn evaluate_side(position: &Position, color: Color, score: &mut Score) {
                 }
                 PieceType::Pawn | PieceType::King => continue,
             };
-            let (mg, eg, typical) = MOBILITY[kind.index() - 1];
-            let reachable =
-                (attacks.0 & !own_pieces.0 & !enemy_pawn_attacks).count_ones() as i32 - typical;
-            score.add((mg * reachable, eg * reachable));
-            if attacks.0 & enemy_king_zone != 0 {
-                king_attackers += 1;
-                king_attack_weight += KING_ZONE_ATTACK[kind.index()];
+            attacks.all |= reach.0;
+            match kind {
+                PieceType::Knight | PieceType::Bishop => attacks.minors |= reach.0,
+                PieceType::Rook => attacks.rooks |= reach.0,
+                _ => {}
             }
-            if kind == PieceType::Rook {
-                let file = file_mask(square.file());
-                if file & own_pawns.0 == 0 {
-                    score.add(if file & enemy_pawns.0 == 0 {
-                        ROOK_OPEN_FILE
-                    } else {
-                        ROOK_SEMI_OPEN_FILE
-                    });
+            let reachable = (reach.0 & !own_pieces.0 & !enemy_pawn_attacks).count_ones() as i32;
+            sink.add(
+                MOBILITY + kind.index() - 1,
+                reachable - TYPICAL_MOBILITY[kind.index() - 1],
+            );
+            if reach.0 & enemy_king_zone != 0 {
+                king_attackers += 1;
+                king_attackers_by_kind[kind.index()] += 1;
+            }
+            match kind {
+                PieceType::Rook => {
+                    let file = file_mask(square.file());
+                    if file & own_pawns.0 == 0 {
+                        sink.add(
+                            if file & enemy_pawns.0 == 0 {
+                                ROOK_OPEN_FILE
+                            } else {
+                                ROOK_SEMI_OPEN_FILE
+                            },
+                            1,
+                        );
+                    }
+                    if relative_rank(color, square) == 6 {
+                        sink.add(ROOK_SEVENTH, 1);
+                    }
                 }
+                PieceType::Knight => {
+                    let rank = relative_rank(color, square);
+                    let safe = forward_span(color, square, adjacent_files(square.file()))
+                        & enemy_pawns.0
+                        == 0;
+                    if (3..=5).contains(&rank) && safe && attacks.pawns & square.bit().0 != 0 {
+                        sink.add(KNIGHT_OUTPOST, 1);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -266,7 +223,7 @@ fn evaluate_side(position: &Position, color: Color, score: &mut Score) {
     // A single attacker rarely threatens mate, so king pressure only counts once two
     // pieces are aimed at the zone, and grows with the number of attackers.
     if king_attackers >= 2 {
-        score.add((king_attack_weight * king_attackers / 4, 0));
+        sink.king_attack(king_attackers_by_kind, king_attackers);
     }
 
     for square in own_pawns {
@@ -274,37 +231,68 @@ fn evaluate_side(position: &Position, color: Color, score: &mut Score) {
         if own_pawns.0 & file_mask(file) & !square.bit().0 != 0
             && forward_span(color, square, file_mask(file)) & own_pawns.0 != 0
         {
-            score.add(DOUBLED);
+            sink.add(DOUBLED, 1);
         }
         if own_pawns.0 & adjacent_files(file) == 0 {
-            score.add(ISOLATED);
+            sink.add(ISOLATED, 1);
         }
         let stoppers = forward_span(color, square, file_mask(file) | adjacent_files(file));
         if stoppers & enemy_pawns.0 == 0 {
-            let relative_rank = match color {
-                Color::White => square.rank(),
-                Color::Black => 7 - square.rank(),
-            } as usize;
-            score.add((PASSED_MG[relative_rank], PASSED_EG[relative_rank]));
+            let rank = relative_rank(color, square);
+            sink.add(PASSED + rank as usize, 1);
+            if rank < 7 {
+                let stop = Square::new(
+                    file,
+                    match color {
+                        Color::White => square.rank() + 1,
+                        Color::Black => square.rank() - 1,
+                    },
+                );
+                sink.add(
+                    PASSED_KING_DISTANCE,
+                    distance(enemy_king, stop) - distance(own_king, stop),
+                );
+            }
         }
     }
 
     if position.pieces(color, PieceType::Bishop).count() >= 2 {
-        score.add(BISHOP_PAIR);
+        sink.add(BISHOP_PAIR, 1);
     }
 
-    let king = position.king(color);
-    let shield_files = file_mask(king.file()) | adjacent_files(king.file());
+    let shield_files = file_mask(own_king.file()) | adjacent_files(own_king.file());
     let near_ranks = (1..=2)
         .filter_map(|step| match color {
-            Color::White => king.rank().checked_add(step).filter(|&rank| rank < 8),
-            Color::Black => king.rank().checked_sub(step),
+            Color::White => own_king.rank().checked_add(step).filter(|&rank| rank < 8),
+            Color::Black => own_king.rank().checked_sub(step),
         })
         .fold(0, |mask, rank| mask | (0xFF_u64 << (8 * rank)));
     let shield = (shield_files & near_ranks & own_pawns.0)
         .count_ones()
         .min(3) as i32;
-    score.add((SHIELD_PAWN * shield, 0));
+    sink.add(SHIELD_PAWN, shield);
+    attacks
+}
+
+fn evaluate_threats(
+    position: &Position,
+    color: Color,
+    own: &Attacks,
+    enemy: &Attacks,
+    sink: &mut impl Sink,
+) {
+    let them = color.other();
+    let kind = |kind: PieceType| position.pieces(them, kind).0;
+    let minors = kind(PieceType::Knight) | kind(PieceType::Bishop);
+    let majors = kind(PieceType::Rook) | kind(PieceType::Queen);
+    let pieces = minors | majors;
+    sink.add(THREAT_BY_PAWN, (own.pawns & pieces).count_ones() as i32);
+    sink.add(THREAT_BY_MINOR, (own.minors & majors).count_ones() as i32);
+    sink.add(
+        THREAT_BY_ROOK,
+        (own.rooks & kind(PieceType::Queen)).count_ones() as i32,
+    );
+    sink.add(HANGING, (own.all & pieces & !enemy.all).count_ones() as i32);
 }
 
 fn phase(position: &Position) -> i32 {
@@ -351,8 +339,22 @@ fn endgame_scale(position: &Position, strong: Color) -> i32 {
 pub fn evaluate(position: &Position) -> i32 {
     let mut white = Score::default();
     let mut black = Score::default();
-    evaluate_side(position, Color::White, &mut white);
-    evaluate_side(position, Color::Black, &mut black);
+    let white_attacks = evaluate_side(position, Color::White, &mut white);
+    let black_attacks = evaluate_side(position, Color::Black, &mut black);
+    evaluate_threats(
+        position,
+        Color::White,
+        &white_attacks,
+        &black_attacks,
+        &mut white,
+    );
+    evaluate_threats(
+        position,
+        Color::Black,
+        &black_attacks,
+        &white_attacks,
+        &mut black,
+    );
     let mg = white.mg - black.mg;
     let mut eg = white.eg - black.eg;
     let strong = if eg >= 0 { Color::White } else { Color::Black };
@@ -364,6 +366,113 @@ pub fn evaluate(position: &Position) -> i32 {
         Color::Black => -score,
     };
     relative + TEMPO
+}
+
+/// Evaluation features of one position for the tuner. `terms` holds white-minus-black
+/// feature counts; king attacks are kept per side because their weight is scaled by the
+/// attacker count. The score is `tapered(mg, eg * scale[strong] / 16) + tempo`, with the
+/// strong side chosen by the sign of the endgame sum.
+pub struct Trace {
+    pub terms: Vec<(u16, i16)>,
+    pub king_attacks: [([i32; 6], i32); 2],
+    pub phase: i32,
+    pub scale: [i32; 2],
+    pub white_to_move: bool,
+}
+
+struct TraceSink {
+    counts: Vec<i32>,
+    sign: i32,
+    king_attack: ([i32; 6], i32),
+}
+
+impl Sink for TraceSink {
+    fn add(&mut self, index: usize, count: i32) {
+        self.counts[index] += self.sign * count;
+    }
+
+    fn king_attack(&mut self, by_kind: [i32; 6], attackers: i32) {
+        self.king_attack = (by_kind, attackers);
+    }
+}
+
+pub fn trace(position: &Position) -> Trace {
+    let mut sink = TraceSink {
+        counts: vec![0; PARAMS],
+        sign: 1,
+        king_attack: ([0; 6], 0),
+    };
+    let white_attacks = evaluate_side(position, Color::White, &mut sink);
+    let white_king = std::mem::take(&mut sink.king_attack);
+    sink.sign = -1;
+    let black_attacks = evaluate_side(position, Color::Black, &mut sink);
+    let black_king = std::mem::take(&mut sink.king_attack);
+    evaluate_threats(
+        position,
+        Color::Black,
+        &black_attacks,
+        &white_attacks,
+        &mut sink,
+    );
+    sink.sign = 1;
+    evaluate_threats(
+        position,
+        Color::White,
+        &white_attacks,
+        &black_attacks,
+        &mut sink,
+    );
+    Trace {
+        terms: sink
+            .counts
+            .iter()
+            .enumerate()
+            .filter(|(_, &count)| count != 0)
+            .map(|(index, &count)| (index as u16, count as i16))
+            .collect(),
+        king_attacks: [white_king, black_king],
+        phase: phase(position),
+        scale: [
+            endgame_scale(position, Color::White),
+            endgame_scale(position, Color::Black),
+        ],
+        white_to_move: position.side_to_move() == Color::White,
+    }
+}
+
+/// White-perspective evaluation of a trace under arbitrary weights, matching `evaluate` for
+/// the built-in weights up to integer rounding.
+pub fn traced_score(trace: &Trace, weights: &[(f64, f64)]) -> f64 {
+    let (mut mg, mut eg) = trace
+        .terms
+        .iter()
+        .fold((0.0, 0.0), |(mg, eg), &(index, count)| {
+            let (w_mg, w_eg) = weights[index as usize];
+            (mg + w_mg * f64::from(count), eg + w_eg * f64::from(count))
+        });
+    for (side, &(by_kind, attackers)) in trace.king_attacks.iter().enumerate() {
+        let sign = if side == 0 { 1.0 } else { -1.0 };
+        for (kind, &count) in by_kind.iter().enumerate() {
+            let (w_mg, w_eg) = weights[KING_ZONE + kind];
+            let factor = sign * f64::from(count * attackers) / 4.0;
+            mg += w_mg * factor;
+            eg += w_eg * factor;
+        }
+    }
+    let strong = if eg >= 0.0 { 0 } else { 1 };
+    eg *= f64::from(trace.scale[strong]) / 16.0;
+    let phase = f64::from(trace.phase);
+    let max = f64::from(MAX_PHASE);
+    let tempo = if trace.white_to_move {
+        f64::from(TEMPO)
+    } else {
+        -f64::from(TEMPO)
+    };
+    (mg * phase + eg * (max - phase)) / max + tempo
+}
+
+pub fn weights() -> &'static [(i32, i32)] {
+    &WEIGHTS
 }
 
 #[cfg(test)]
@@ -431,5 +540,33 @@ mod tests {
         let passed = Position::from_fen("4k3/p7/8/3P4/8/8/1P6/4K3 w - - 0 1").unwrap();
         let stopped = Position::from_fen("4k3/2p5/8/3P4/8/8/1P6/4K3 w - - 0 1").unwrap();
         assert!(evaluate(&passed) > evaluate(&stopped) + 15);
+    }
+
+    #[test]
+    fn trace_reproduces_the_evaluation() {
+        let weights: Vec<(f64, f64)> = weights()
+            .iter()
+            .map(|&(mg, eg)| (f64::from(mg), f64::from(eg)))
+            .collect();
+        for fen in [
+            "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+            "8/5pk1/6p1/3P4/1r6/6P1/5PK1/3R4 b - - 0 40",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "2kr3r/ppp2ppp/2n5/2b1q3/4P1b1/2NB4/PPPQ1PPP/R4RK1 b - - 0 12",
+            "8/8/4k3/8/2N5/8/4K3/8 w - - 0 1",
+        ] {
+            let position = Position::from_fen(fen).unwrap();
+            let relative = evaluate(&position);
+            let white = if position.side_to_move() == Color::White {
+                relative
+            } else {
+                -relative
+            };
+            let traced = traced_score(&trace(&position), &weights);
+            assert!(
+                (traced - f64::from(white)).abs() <= 2.0,
+                "{fen}: {traced} vs {white}"
+            );
+        }
     }
 }
