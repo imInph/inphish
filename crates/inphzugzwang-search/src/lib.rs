@@ -389,7 +389,8 @@ impl Search<'_> {
             let quiet = is_quiet(mv);
             let gives_check = self.position.gives_check(mv);
             if !pv_node && !in_check && quiet && !gives_check && best > -MATE_BOUND {
-                if depth <= 4 && index >= 3 + (depth * depth) as usize {
+                let late = 3 + (depth * depth) as usize;
+                if depth <= 4 && index >= late {
                     continue;
                 }
                 if depth <= 3 && static_eval + 100 + 100 * depth <= alpha {
@@ -504,22 +505,38 @@ impl Search<'_> {
         {
             return 0;
         }
+        let key = self.position.key();
+        let original_alpha = alpha;
+        let hit = self.tt.probe(key, ply);
+        let tt_move = hit
+            .map(|record| record.mv)
+            .filter(|&mv| mv != Move::NULL && self.position.is_pseudo_legal(mv));
+        // Any stored bound is at least as deep as quiescence, so it can cut here directly.
+        if let Some(record) = hit.filter(|record| record.mv == Move::NULL || tt_move.is_some()) {
+            match record.bound {
+                Bound::Exact => return record.score,
+                Bound::Lower if record.score >= beta => return record.score,
+                Bound::Upper if record.score <= alpha => return record.score,
+                _ => {}
+            }
+        }
         let stand_pat = if in_check {
             -INF
         } else {
-            evaluate(&self.position)
+            hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
         };
         if ply >= MAX_PLY - 1 {
             return if in_check { 0 } else { stand_pat };
         }
         let mut best = stand_pat;
+        let mut best_move = Move::NULL;
         if !in_check {
             if stand_pat >= beta {
                 return stand_pat;
             }
             alpha = alpha.max(stand_pat);
         }
-        self.order(&mut moves, None, ply);
+        self.order(&mut moves, tt_move, ply);
         for mv in moves.iter() {
             if !in_check && !self.position.see_ge(mv, 0) {
                 continue;
@@ -530,7 +547,10 @@ impl Search<'_> {
             if self.aborted {
                 return 0;
             }
-            best = best.max(score);
+            if score > best {
+                best = score;
+                best_move = mv;
+            }
             if score > alpha {
                 alpha = score;
                 self.pv[ply][0] = mv;
@@ -544,6 +564,25 @@ impl Search<'_> {
                 break;
             }
         }
+        self.tt.store(
+            key,
+            ply,
+            Record {
+                mv: best_move,
+                score: best,
+                eval: if in_check { 0 } else { stand_pat },
+                depth: 0,
+                bound: if best >= beta {
+                    Bound::Lower
+                } else if best <= original_alpha {
+                    Bound::Upper
+                } else {
+                    Bound::Exact
+                },
+                pv: false,
+                age: 0,
+            },
+        );
         best
     }
 
