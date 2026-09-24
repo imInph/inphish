@@ -32,7 +32,7 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench 4
 ```
 
-The depth-4 signature is `86158` nodes. It must match in debug and release builds and on supported platforms.
+The depth-4 signature is `86020` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
@@ -75,7 +75,7 @@ The first run used 14,125 older inphish games (89,270 positions). Without a prio
 
 ## Search changes after 0.1.0
 
-Each candidate played 40 games at 1+0.01 against the preceding build (Hash 16 MiB, two concurrent games, 20 balanced openings with colors swapped). Transposition-table probing and storing in quiescence scored 21.5 of 40 (14 wins, 11 losses, 15 draws) and was kept as a standard, neutral change. Adding an improving flag to reverse futility, late move pruning, and late move reductions on top of it scored 15 of 40 (6 wins, 16 losses, 18 draws) and was dropped. Aspiration windows from depth 5, starting at 25 centipawns around the previous score and doubling on each fail, scored 25 of 40 against the quiescence-table build (17 wins, 7 losses, 16 draws, all normal terminations). The depth-4 bench does not reach them, so the signature is unchanged.
+Each candidate played 40 games at 1+0.01 against the preceding build (Hash 16 MiB, two concurrent games, 20 balanced openings with colors swapped). Transposition-table probing and storing in quiescence scored 21.5 of 40 (14 wins, 11 losses, 15 draws) and was kept as a standard, neutral change. Adding an improving flag to reverse futility, late move pruning, and late move reductions on top of it scored 15 of 40 (6 wins, 16 losses, 18 draws) and was dropped. Aspiration windows from depth 5, starting at 25 centipawns around the previous score and doubling on each fail, scored 25 of 40 against the quiescence-table build (17 wins, 7 losses, 16 draws, all normal terminations). The depth-4 bench does not reach them, so the signature is unchanged. A one-ply continuation history, added to quiet-move ordering and to the history bonus and penalty, scored 21.5 of 40 against the aspiration build (18 wins, 15 losses, 7 draws) and was kept as a standard, neutral change.
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 

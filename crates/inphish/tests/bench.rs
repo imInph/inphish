@@ -8,5 +8,5 @@ fn bench_signature_is_stable() {
         .unwrap();
     assert!(output.status.success());
     let line = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(line.split_whitespace().next(), Some("86158"));
+    assert_eq!(line.split_whitespace().next(), Some("86020"));
 }

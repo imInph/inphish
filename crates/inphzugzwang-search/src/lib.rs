@@ -15,6 +15,7 @@ const MATE: i32 = 30_000;
 const INF: i32 = 32_000;
 const MATE_BOUND: i32 = MATE - MAX_PLY as i32;
 const HISTORY_MAX: i32 = 16_384;
+const PIECE_SQUARES: usize = 12 * 64;
 
 #[derive(Clone, Default)]
 pub struct Limits {
@@ -63,6 +64,8 @@ struct Search<'a> {
     aborted: bool,
     killers: [[Move; 2]; MAX_PLY],
     history: Box<[[[i32; 64]; 64]; 2]>,
+    continuation: Box<[i32]>,
+    played: [Option<usize>; MAX_PLY],
     reductions: [[u8; 64]; 64],
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
@@ -99,6 +102,8 @@ pub fn search_with_table(
         aborted: false,
         killers: [[Move::NULL; 2]; MAX_PLY],
         history: Box::new([[[0; 64]; 64]; 2]),
+        continuation: vec![0; PIECE_SQUARES * PIECE_SQUARES].into_boxed_slice(),
+        played: [None; MAX_PLY],
         reductions: reduction_table(),
         pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
         pv_len: [0; MAX_PLY],
@@ -253,6 +258,7 @@ impl Search<'_> {
                 break;
             }
             let before = self.nodes;
+            self.played[0] = Some(self.piece_square(mv));
             self.position.make(mv);
             let child_depth = depth as i32 - 1;
             let mut score = if index == 0 {
@@ -411,6 +417,7 @@ impl Search<'_> {
                 // Pawn-only positions are excluded because zugzwang is common there and
                 // passing would be an illegal advantage the null move cannot represent.
                 let reduction = 3 + depth / 4 + ((static_eval - beta) / 200).min(3);
+                self.played[ply] = None;
                 self.position.make_null();
                 let score = -self.negamax(depth - 1 - reduction, -beta, -beta + 1, ply + 1, false);
                 self.position.unmake();
@@ -441,6 +448,7 @@ impl Search<'_> {
                 }
             }
             let history = self.history[side][mv.from().index()][mv.to().index()];
+            self.played[ply] = Some(self.piece_square(mv));
             self.position.make(mv);
             let new_depth = depth - 1;
             let mut score;
@@ -491,9 +499,9 @@ impl Search<'_> {
                         self.killers[ply][0] = mv;
                     }
                     let bonus = (16 * depth * depth).min(1600);
-                    self.update_history(side, mv, bonus);
+                    self.update_history(side, mv, bonus, ply);
                     for &tried in &quiets_tried[..quiet_count] {
-                        self.update_history(side, tried, -bonus);
+                        self.update_history(side, tried, -bonus, ply);
                     }
                 }
                 break;
@@ -525,11 +533,30 @@ impl Search<'_> {
         best
     }
 
-    fn update_history(&mut self, side: usize, mv: Move, bonus: i32) {
-        let entry = &mut self.history[side][mv.from().index()][mv.to().index()];
+    fn update_history(&mut self, side: usize, mv: Move, bonus: i32, ply: usize) {
         // Gravity keeps entries inside +-HISTORY_MAX: the closer a value is to the bound,
         // the less a further bonus in the same direction moves it.
-        *entry += bonus - *entry * bonus.abs() / HISTORY_MAX;
+        let gravity = |entry: &mut i32| *entry += bonus - *entry * bonus.abs() / HISTORY_MAX;
+        gravity(&mut self.history[side][mv.from().index()][mv.to().index()]);
+        if let Some(index) = self.continuation_index(mv, ply) {
+            gravity(&mut self.continuation[index]);
+        }
+    }
+
+    fn piece_square(&self, mv: Move) -> usize {
+        let piece = self
+            .position
+            .piece_at(mv.from())
+            .expect("legal move has a mover");
+        (piece.color.index() * 6 + piece.kind.index()) * 64 + mv.to().index()
+    }
+
+    /// Continuation history slot for `mv` as a reply to the move played one ply earlier:
+    /// quiet replies that refuted the same piece arriving on the same square tend to work
+    /// again, which plain from-to history cannot see.
+    fn continuation_index(&self, mv: Move, ply: usize) -> Option<usize> {
+        let previous = self.played[ply.checked_sub(1)?]?;
+        Some(previous * PIECE_SQUARES + self.piece_square(mv))
     }
 
     fn quiescence(&mut self, mut alpha: i32, beta: i32, ply: usize) -> i32 {
@@ -641,7 +668,10 @@ impl Search<'_> {
                 return 89_000;
             }
             let side = self.position.side_to_move().index();
-            return self.history[side][mv.from().index()][mv.to().index()];
+            let continuation = self
+                .continuation_index(mv, ply)
+                .map_or(0, |index| self.continuation[index]);
+            return self.history[side][mv.from().index()][mv.to().index()] + continuation;
         }
         let attacker = self
             .position
