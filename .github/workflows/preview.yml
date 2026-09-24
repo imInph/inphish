@@ -82,4 +82,6 @@ jobs:
           git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           title=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
           test -n "$title"
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --latest --title "$title" --notes-from-tag
+          notes=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")
+          test -n "$notes"
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --latest --title "$title" --notes "$notes"
