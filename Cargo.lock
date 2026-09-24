@@ -29,3 +29,11 @@ dependencies = [
  "inphzugzwang-core",
  "inphzugzwang-eval",
 ]
+
+[[package]]
+name = "inphzugzwang-tune"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-core",
+ "inphzugzwang-eval",
+]

@@ -18,7 +18,7 @@ pub const TEMPO: i32 = 10;
 // on the Chess Programming Wiki and laid out from a8 to h1, so a white piece on square s
 // reads entry s ^ 56 and a black piece reads entry s.
 const MATERIAL: usize = 0;
-const PST: usize = MATERIAL + 6;
+pub const PST: usize = MATERIAL + 6;
 // Indexed by relative rank; the piece-square tables already reward advancement, so these
 // carry only the part that depends on no enemy pawn being able to stop the pawn.
 const PASSED: usize = PST + 6 * 64;
@@ -537,8 +537,8 @@ mod tests {
 
     #[test]
     fn passed_pawn_outweighs_blocked_pawn() {
-        let passed = Position::from_fen("4k3/p7/8/3P4/8/8/1P6/4K3 w - - 0 1").unwrap();
-        let stopped = Position::from_fen("4k3/2p5/8/3P4/8/8/1P6/4K3 w - - 0 1").unwrap();
+        let passed = Position::from_fen("7k/p7/8/3P4/8/K7/1P6/8 w - - 0 1").unwrap();
+        let stopped = Position::from_fen("7k/2p5/8/3P4/8/K7/1P6/8 w - - 0 1").unwrap();
         assert!(evaluate(&passed) > evaluate(&stopped) + 15);
     }
 
