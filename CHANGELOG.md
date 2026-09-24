@@ -1,6 +1,6 @@
 # inphzugzwang changelog
 
-## 1.0.0 - unreleased
+## 1.0.0 - 2026-09-24
 
 - Evaluation terms for pieces attacked by lesser pieces, undefended attacked pieces, knight outposts, rooks on the seventh rank, and passed-pawn king distance, all read from one indexed weight table.
 - Transposition-table probing and storing in quiescence, aspiration windows from depth 5, and a one-ply continuation history for quiet-move ordering.
@@ -9,6 +9,7 @@
 - The release title now comes from the annotated tag's subject line.
 - `docs/ROADMAP.md` records which of the original nine phases were built, partly built, or not built.
 - Development batches at 1+0.01 against the preceding build, 40 games each: new evaluation terms 21.5/40 against 0.1.0, quiescence table 21.5/40, aspiration windows 25/40, continuation history 21.5/40. Directional only.
+- Release checks at 1+0.01, Hash 16 MiB, one thread, balanced openings with colors swapped: 30/40 against 0.1.0 (26 W / 6 L / 8 D); 19/20 against Morstilia 6.0.0 (18 W / 0 L / 2 D); 20/20 against MaiEngine, of which 16 were MaiEngine time forfeits and 4 checkmates. Small samples, not Elo measurements.
 - Depth-4 bench signature: 86020 nodes.
 
 ## 0.1.0 - 2026-09-24

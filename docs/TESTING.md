@@ -77,6 +77,10 @@ The first run used 14,125 older inphish games (89,270 positions). Without a prio
 
 Each candidate played 40 games at 1+0.01 against the preceding build (Hash 16 MiB, two concurrent games, 20 balanced openings with colors swapped). Transposition-table probing and storing in quiescence scored 21.5 of 40 (14 wins, 11 losses, 15 draws) and was kept as a standard, neutral change. Adding an improving flag to reverse futility, late move pruning, and late move reductions on top of it scored 15 of 40 (6 wins, 16 losses, 18 draws) and was dropped. Aspiration windows from depth 5, starting at 25 centipawns around the previous score and doubling on each fail, scored 25 of 40 against the quiescence-table build (17 wins, 7 losses, 16 draws, all normal terminations). The depth-4 bench does not reach them, so the signature is unchanged. A one-ply continuation history, added to quiet-move ordering and to the history bonus and penalty, scored 21.5 of 40 against the aspiration build (18 wins, 15 losses, 7 draws) and was kept as a standard, neutral change.
 
+## 1.0.0 release checks
+
+Revision `7c66dd8` (1.0.0, bench 86020) played through `tools/match.sh` at 1+0.01, Hash 16 MiB, two concurrent games, on the balanced book with colors swapped. Against 0.1.0 (`f52f88a`), 40 games: 26 wins, 6 losses, 8 draws, 30 of 40, with 14 opening pairs won and 3 lost. Against Morstilia 6.0.0, 20 games: 18 wins, 0 losses, 2 draws (18 checkmates, 2 threefold repetitions). Against MaiEngine, 20 games: 20 wins, of which 16 were MaiEngine time forfeits and 4 checkmates; inphish lost no game on time. These are small samples and not Elo measurements; the MaiEngine result mainly reflects its clock handling at this control.
+
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 
 ## Optional SPRT

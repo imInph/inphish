@@ -41,7 +41,7 @@ Correctness tests and their reference data are described in [docs/TESTING.md](do
 
 ## Strength
 
-No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches at 10+0.1 with Hash 16 MiB, one thread, and ten openings played with colors swapped: 19 wins, 0 losses, 1 draw against Morstilia 6.0.0, and 18 wins, 1 loss, 1 draw against MaiEngine. These are small informal samples, not a rating. Changes since then were checked in 40-game batches at 1+0.01 against the preceding build; see [docs/TESTING.md](docs/TESTING.md).
+No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches at 10+0.1 with Hash 16 MiB, one thread, and ten openings played with colors swapped: 19 wins, 0 losses, 1 draw against Morstilia 6.0.0, and 18 wins, 1 loss, 1 draw against MaiEngine. These are small informal samples, not a rating. Version 1.0.0 was checked at 1+0.01 on the committed balanced openings with colors swapped: 30 of 40 against 0.1.0 (26 wins, 6 losses, 8 draws) and 19 of 20 against Morstilia 6.0.0 (18 wins, 2 draws). It also won all 20 games against MaiEngine, but 16 of those were MaiEngine losing on time, so that result says little about playing strength. See [docs/TESTING.md](docs/TESTING.md).
 
 ## Limitations
 
