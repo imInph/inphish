@@ -13,6 +13,8 @@ use tt::{Bound, Record};
 const MAX_PLY: usize = 128;
 const MATE: i32 = 30_000;
 const INF: i32 = 32_000;
+const MATE_BOUND: i32 = MATE - MAX_PLY as i32;
+const HISTORY_MAX: i32 = 16_384;
 
 #[derive(Clone, Default)]
 pub struct Limits {
@@ -60,6 +62,8 @@ struct Search<'a> {
     seldepth: usize,
     aborted: bool,
     killers: [[Move; 2]; MAX_PLY],
+    history: Box<[[[i32; 64]; 64]; 2]>,
+    reductions: [[u8; 64]; 64],
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
 }
@@ -94,6 +98,8 @@ pub fn search_with_table(
         seldepth: 0,
         aborted: false,
         killers: [[Move::NULL; 2]; MAX_PLY],
+        history: Box::new([[[0; 64]; 64]; 2]),
+        reductions: reduction_table(),
         pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
         pv_len: [0; MAX_PLY],
     };
@@ -150,12 +156,12 @@ pub fn search_with_table(
             let before = worker.nodes;
             worker.position.make(mv);
             let mut score = if index == 0 {
-                -worker.negamax(depth as i32 - 1, -INF, -alpha, 1)
+                -worker.negamax(depth as i32 - 1, -INF, -alpha, 1, true)
             } else {
-                -worker.negamax(depth as i32 - 1, -alpha - 1, -alpha, 1)
+                -worker.negamax(depth as i32 - 1, -alpha - 1, -alpha, 1, true)
             };
             if index > 0 && score > alpha && !worker.aborted {
-                score = -worker.negamax(depth as i32 - 1, -INF, -alpha, 1);
+                score = -worker.negamax(depth as i32 - 1, -INF, -alpha, 1, true);
             }
             worker.position.unmake();
             if worker.aborted {
@@ -286,27 +292,34 @@ impl Search<'_> {
         }
     }
 
-    fn negamax(&mut self, depth: i32, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+    fn negamax(
+        &mut self,
+        mut depth: i32,
+        mut alpha: i32,
+        beta: i32,
+        ply: usize,
+        allow_null: bool,
+    ) -> i32 {
         self.pv_len[ply] = 0;
         if self.visit(ply) {
             return 0;
         }
-        if self.position.is_threefold() || self.position.is_insufficient_material() {
+        if self.position.is_repetition() || self.position.is_insufficient_material() {
             return 0;
         }
         if ply >= MAX_PLY - 1 {
             return evaluate(&self.position);
+        }
+        let in_check = self.position.checkers().0 != 0;
+        if in_check {
+            depth += 1;
         }
         if depth <= 0 {
             return self.quiescence(alpha, beta, ply);
         }
         let mut moves = self.position.legal_moves();
         if moves.is_empty() {
-            return if self.position.checkers().0 != 0 {
-                -MATE + ply as i32
-            } else {
-                0
-            };
+            return if in_check { -MATE + ply as i32 } else { 0 };
         }
         if self.position.is_fifty_move_draw() {
             return 0;
@@ -334,19 +347,81 @@ impl Search<'_> {
                 }
             }
         }
-        let static_eval = hit.map_or_else(|| evaluate(&self.position), |record| record.eval);
+        let static_eval = if in_check {
+            0
+        } else {
+            hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
+        };
+        if !pv_node && !in_check && beta.abs() < MATE_BOUND {
+            // Reverse futility: a quiet position this far above beta at low depth is not
+            // expected to fall back below it within the remaining plies.
+            if depth <= 6 && static_eval - 80 * depth >= beta {
+                return static_eval;
+            }
+            if allow_null
+                && depth >= 3
+                && static_eval >= beta
+                && self
+                    .position
+                    .has_non_pawn_material(self.position.side_to_move())
+            {
+                // Pawn-only positions are excluded because zugzwang is common there and
+                // passing would be an illegal advantage the null move cannot represent.
+                let reduction = 3 + depth / 4 + ((static_eval - beta) / 200).min(3);
+                self.position.make_null();
+                let score = -self.negamax(depth - 1 - reduction, -beta, -beta + 1, ply + 1, false);
+                self.position.unmake();
+                if self.aborted {
+                    return 0;
+                }
+                if score >= beta {
+                    return if score >= MATE_BOUND { beta } else { score };
+                }
+            }
+        }
         self.order(&mut moves, tt_move, ply);
+        let side = self.position.side_to_move().index();
         let mut best = -INF;
         let mut best_move = Move::NULL;
+        let mut quiets_tried = [Move::NULL; 64];
+        let mut quiet_count = 0;
         for (index, mv) in moves.iter().enumerate() {
+            let quiet = is_quiet(mv);
+            let gives_check = self.position.gives_check(mv);
+            if !pv_node && !in_check && quiet && !gives_check && best > -MATE_BOUND {
+                if depth <= 4 && index >= 3 + (depth * depth) as usize {
+                    continue;
+                }
+                if depth <= 3 && static_eval + 100 + 100 * depth <= alpha {
+                    continue;
+                }
+            }
+            let history = self.history[side][mv.from().index()][mv.to().index()];
             self.position.make(mv);
-            let mut score = if index == 0 {
-                -self.negamax(depth - 1, -beta, -alpha, ply + 1)
+            let new_depth = depth - 1;
+            let mut score;
+            if index == 0 {
+                score = -self.negamax(new_depth, -beta, -alpha, ply + 1, true);
             } else {
-                -self.negamax(depth - 1, -alpha - 1, -alpha, ply + 1)
-            };
-            if index > 0 && score > alpha && score < beta && !self.aborted {
-                score = -self.negamax(depth - 1, -beta, -alpha, ply + 1);
+                let mut reduction = 0;
+                if depth >= 3 && index >= 3 && quiet && !in_check && !gives_check {
+                    reduction = i32::from(self.reductions[depth.min(63) as usize][index.min(63)]);
+                    if pv_node {
+                        reduction -= 1;
+                    }
+                    if self.killers[ply].contains(&mv) {
+                        reduction -= 1;
+                    }
+                    reduction -= history / 8192;
+                    reduction = reduction.clamp(0, new_depth - 1);
+                }
+                score = -self.negamax(new_depth - reduction, -alpha - 1, -alpha, ply + 1, true);
+                if score > alpha && reduction > 0 && !self.aborted {
+                    score = -self.negamax(new_depth, -alpha - 1, -alpha, ply + 1, true);
+                }
+                if score > alpha && score < beta && !self.aborted {
+                    score = -self.negamax(new_depth, -beta, -alpha, ply + 1, true);
+                }
             }
             self.position.unmake();
             if self.aborted {
@@ -366,11 +441,22 @@ impl Search<'_> {
                 self.pv_len[ply] = child_len + 1;
             }
             if alpha >= beta {
-                if is_quiet(mv) && self.killers[ply][0] != mv {
-                    self.killers[ply][1] = self.killers[ply][0];
-                    self.killers[ply][0] = mv;
+                if quiet {
+                    if self.killers[ply][0] != mv {
+                        self.killers[ply][1] = self.killers[ply][0];
+                        self.killers[ply][0] = mv;
+                    }
+                    let bonus = (16 * depth * depth).min(1600);
+                    self.update_history(side, mv, bonus);
+                    for &tried in &quiets_tried[..quiet_count] {
+                        self.update_history(side, tried, -bonus);
+                    }
                 }
                 break;
+            }
+            if quiet && quiet_count < quiets_tried.len() {
+                quiets_tried[quiet_count] = mv;
+                quiet_count += 1;
             }
         }
         self.tt.store(
@@ -395,6 +481,13 @@ impl Search<'_> {
         best
     }
 
+    fn update_history(&mut self, side: usize, mv: Move, bonus: i32) {
+        let entry = &mut self.history[side][mv.from().index()][mv.to().index()];
+        // Gravity keeps entries inside +-HISTORY_MAX: the closer a value is to the bound,
+        // the less a further bonus in the same direction moves it.
+        *entry += bonus - *entry * bonus.abs() / HISTORY_MAX;
+    }
+
     fn quiescence(&mut self, mut alpha: i32, beta: i32, ply: usize) -> i32 {
         self.pv_len[ply] = 0;
         if self.visit(ply) {
@@ -405,16 +498,21 @@ impl Search<'_> {
         if moves.is_empty() && (in_check || self.position.legal_moves().is_empty()) {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
-        if self.position.is_threefold()
+        if self.position.is_repetition()
             || self.position.is_insufficient_material()
             || self.position.is_fifty_move_draw()
         {
             return 0;
         }
-        let stand_pat = evaluate(&self.position);
+        let stand_pat = if in_check {
+            -INF
+        } else {
+            evaluate(&self.position)
+        };
         if ply >= MAX_PLY - 1 {
-            return stand_pat;
+            return if in_check { 0 } else { stand_pat };
         }
+        let mut best = stand_pat;
         if !in_check {
             if stand_pat >= beta {
                 return stand_pat;
@@ -423,12 +521,16 @@ impl Search<'_> {
         }
         self.order(&mut moves, None, ply);
         for mv in moves.iter() {
+            if !in_check && !self.position.see_ge(mv, 0) {
+                continue;
+            }
             self.position.make(mv);
             let score = -self.quiescence(-beta, -alpha, ply + 1);
             self.position.unmake();
             if self.aborted {
                 return 0;
             }
+            best = best.max(score);
             if score > alpha {
                 alpha = score;
                 self.pv[ply][0] = mv;
@@ -442,45 +544,57 @@ impl Search<'_> {
                 break;
             }
         }
-        alpha
+        best
     }
 
     fn move_score(&self, mv: Move, preferred: Option<Move>, ply: usize) -> i32 {
         if Some(mv) == preferred {
-            return 100_000;
+            return 1_000_000;
         }
         if is_quiet(mv) {
             if mv == self.killers[ply][0] {
-                return 2;
+                return 90_000;
             }
             if mv == self.killers[ply][1] {
-                return 1;
+                return 89_000;
             }
+            let side = self.position.side_to_move().index();
+            return self.history[side][mv.from().index()][mv.to().index()];
         }
         let attacker = self
             .position
             .piece_at(mv.from())
             .expect("legal move has mover");
-        let victim = if mv.is_castle() {
-            None
+        let victim = if mv.flag() == 5 {
+            Some(PieceType::Pawn)
         } else {
             self.position.piece_at(mv.to()).map(|piece| piece.kind)
         };
-        let capture = if mv.flag() == 5 {
-            Some(PieceType::Pawn)
-        } else {
-            victim
-        };
-        let gain = capture.map_or(0, |kind| {
+        let gain = victim.map_or(0, |kind| {
             VALUES[kind.index()] * 16 - VALUES[attacker.kind.index()]
-        });
-        let promotion = mv.promotion().map_or(0, |kind| VALUES[kind.index()]);
-        gain + promotion
+        }) + mv.promotion().map_or(0, |kind| VALUES[kind.index()]);
+        if self.position.see_ge(mv, 0) {
+            200_000 + gain
+        } else {
+            -200_000 + gain
+        }
     }
 
     fn order(&self, moves: &mut MoveList, preferred: Option<Move>, ply: usize) {
         moves.sort_by_key(|mv| self.move_score(mv, preferred, ply));
     }
+}
+
+/// Late move reductions grow with the logarithm of both depth and move number, the form
+/// most engines converged on after Stockfish; the divisor sets how aggressive it is.
+fn reduction_table() -> [[u8; 64]; 64] {
+    let mut table = [[0; 64]; 64];
+    for (depth, row) in table.iter_mut().enumerate().skip(1) {
+        for (index, cell) in row.iter_mut().enumerate().skip(1) {
+            *cell = (0.75 + (depth as f64).ln() * (index as f64).ln() / 2.25) as u8;
+        }
+    }
+    table
 }
 
 fn is_quiet(mv: Move) -> bool {

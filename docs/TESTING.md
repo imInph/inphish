@@ -32,7 +32,7 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench 4
 ```
 
-The depth-4 signature is `487865` nodes. It must match in debug and release builds and on supported platforms.
+The depth-4 signature is `95766` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
@@ -45,6 +45,8 @@ The direct tactical move generator was compared with the preceding revision at 8
 ## Development matches
 
 Correctness checks remain required. For search and evaluation changes, run a short paired match after a meaningful batch of work or at a phase boundary. On the development Mac, use at most 40 games at 1+0.01 with two concurrent games and a 20-minute wall-clock cap. Record completed games, wins, losses, draws, time control, and any abnormal termination. Stop at the cap rather than extending the run. A small match is a regression signal, not an Elo measurement or proof that a change is stronger.
+
+The first bounded match after adding the tapered evaluation and selective search, with the short-clock fix, played 20 games against Morstilia 6.0.0 at 1+0.01, Hash 16 MiB, one thread, two concurrent games, and ten openings from the development EPD set with colors swapped: 20 wins, 0 losses, 0 draws, all terminated normally. A MaiEngine batch at 1+0.01 on the preceding build ended with 17 of 20 games lost on time by MaiEngine, which spends about 50 ms per move regardless of its clock, so that control does not measure play against it.
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 

@@ -22,7 +22,7 @@ The executable is `target/release/inphish` (`inphish.exe` on Windows). Building 
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-The current playing engine uses iterative deepening, principal variation search, a transposition table, killer move ordering, capture/evasion quiescence, and material plus piece-square evaluation. UCI options are `Hash` (16 MiB by default), `Clear Hash`, and `Move Overhead` (20 ms by default). Standard chess is the UCI default. Chess960 board rules and perft are implemented, but the full Chess960 UCI game option is not yet available.
+The engine uses iterative deepening, principal variation search, a transposition table, null-move and futility pruning, late move reductions, killer, history and static-exchange move ordering, and quiescence search. The evaluation is a tapered hand-written function with PeSTO piece-square tables, mobility, pawn structure, passed pawns, and king safety terms. UCI options are `Hash` (16 MiB by default), `Clear Hash`, and `Move Overhead` (20 ms by default). Standard chess is the UCI default. Chess960 board rules and perft are implemented, but the full Chess960 UCI game option is not yet available.
 
 ## Diagnostic commands
 
@@ -37,7 +37,11 @@ target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/P
 
 `perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument.
 
-Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `487865` nodes. Some search changes have been measured by SPRT against preceding revisions; the most recent tactical-generation match was inconclusive. Absolute playing strength remains unmeasured.
+Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `95766` nodes. Some earlier search changes were measured by SPRT against preceding revisions; later changes are checked with short bounded matches recorded in the testing notes. Absolute playing strength remains unmeasured.
+
+## Acknowledgements
+
+The Chess Programming Wiki documents most of the techniques used here. The piece-square tables are Ronald Friederich's PeSTO tables as published on the wiki.
 
 ## License
 
