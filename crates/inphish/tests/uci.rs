@@ -98,3 +98,41 @@ fn uci_smoke() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_edge_cases() {
+    let mut engine = Engine::spawn();
+    engine.send("go depth 2");
+    let opening = engine.until("bestmove ");
+    assert!(matches!(
+        &opening[9..10],
+        "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h"
+    ));
+    assert!(matches!(&opening[10..11], "1" | "2"), "{opening}");
+
+    engine.send("position startpos moves e2e4 e2e4 d7d5");
+    engine.send("go depth 2");
+    let reply = engine.until("bestmove ");
+    assert!(matches!(&reply[10..11], "7" | "8"), "{reply}");
+
+    engine.send("position startpos");
+    engine.send("go nodes 500");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+    engine.send("go movetime 50");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+
+    engine.send("go ponder wtime 1000 btime 1000");
+    let deadline = std::time::Instant::now() + Duration::from_millis(300);
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        if let Ok(line) = engine.lines.recv_timeout(left) {
+            assert!(!line.starts_with("bestmove"), "ponder ended early: {line}");
+        }
+    }
+    engine.send("ponderhit");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+
+    engine.send("go infinite");
+    engine.send("quit");
+    assert!(engine.until("bestmove ").starts_with("bestmove "));
+    assert!(engine.child.wait().unwrap().success());
+}
