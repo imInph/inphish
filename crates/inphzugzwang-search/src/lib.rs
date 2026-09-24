@@ -401,8 +401,8 @@ impl Search<'_> {
             return 0;
         }
         let in_check = self.position.checkers().0 != 0;
-        let mut moves = self.position.legal_moves();
-        if moves.is_empty() {
+        let mut moves = self.position.tactical_moves();
+        if moves.is_empty() && (in_check || self.position.legal_moves().is_empty()) {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
         if self.position.is_threefold()
@@ -423,9 +423,6 @@ impl Search<'_> {
         }
         self.order(&mut moves, None, ply);
         for mv in moves.iter() {
-            if !in_check && mv.flag() & 4 == 0 && mv.promotion().is_none() {
-                continue;
-            }
             self.position.make(mv);
             let score = -self.quiescence(-beta, -alpha, ply + 1);
             self.position.unmake();

@@ -1,4 +1,32 @@
-use inphzugzwang_core::{Color, Position, Square, START_FEN};
+use inphzugzwang_core::{Color, PieceType, Position, Square, START_FEN};
+
+#[test]
+fn tactical_generation_matches_legal_move_filter() {
+    for fen in [
+        START_FEN,
+        "k7/8/8/3pP3/4K3/8/8/8 w - d6 0 1",
+        "k6r/6P1/8/8/8/8/8/7K w - - 0 1",
+        "k3r3/8/8/8/1b6/8/8/4K1N1 w - - 0 1",
+        "k7/8/8/8/8/8/8/6KR w H - 0 1",
+    ] {
+        let position = Position::from_fen(fen).unwrap();
+        let in_check = position.checkers().0 != 0;
+        let mut expected: Vec<_> = position
+            .legal_moves()
+            .iter()
+            .filter(|mv| in_check || mv.flag() & 4 != 0 || mv.promotion() == Some(PieceType::Queen))
+            .map(|mv| mv.raw())
+            .collect();
+        let mut actual: Vec<_> = position
+            .tactical_moves()
+            .iter()
+            .map(|mv| mv.raw())
+            .collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "{fen}");
+    }
+}
 
 #[test]
 fn fen_round_trips_standard_and_chess960() {
@@ -40,6 +68,20 @@ fn random_play_restores_full_state_and_hashes() {
         if moves.is_empty() {
             break;
         }
+        let in_check = position.checkers().0 != 0;
+        let mut expected: Vec<_> = moves
+            .iter()
+            .filter(|mv| in_check || mv.flag() & 4 != 0 || mv.promotion() == Some(PieceType::Queen))
+            .map(|mv| mv.raw())
+            .collect();
+        let mut actual: Vec<_> = position
+            .tactical_moves()
+            .iter()
+            .map(|mv| mv.raw())
+            .collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "{}", position.fen());
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;

@@ -384,6 +384,14 @@ impl Position {
     }
 
     pub fn legal_moves(&self) -> MoveList {
+        self.generate_legal_moves(false)
+    }
+
+    pub fn tactical_moves(&self) -> MoveList {
+        self.generate_legal_moves(self.state.checkers.0 == 0)
+    }
+
+    fn generate_legal_moves(&self, tactical_only: bool) -> MoveList {
         let mut moves = MoveList::new();
         let side = self.state.side;
         let enemy = side.other();
@@ -392,6 +400,9 @@ impl Position {
         let occupancy = own | theirs;
         let king = self.king(side);
         for to in king_attacks(king) & !own {
+            if tactical_only && !theirs.contains(to) {
+                continue;
+            }
             let after = Bitboard((occupancy.0 & !king.bit().0 & !to.bit().0) | to.bit().0);
             if !self.is_attacked(
                 to,
@@ -431,10 +442,16 @@ impl Position {
                 let to = Square(destination as u8);
                 if !occupancy.contains(to) {
                     if check_mask.contains(to) && pinned_line.contains(to) {
-                        self.push_pawn_move(&mut moves, from, to, false);
+                        if tactical_only {
+                            if to.rank() == 0 || to.rank() == 7 {
+                                moves.push(Move::new(from, to, MoveFlag::QueenPromotion));
+                            }
+                        } else {
+                            self.push_pawn_move(&mut moves, from, to, false);
+                        }
                     }
                     let start_rank = if side == Color::White { 1 } else { 6 };
-                    if from.rank() == start_rank {
+                    if !tactical_only && from.rank() == start_rank {
                         let double = Square((destination + forward) as u8);
                         if !occupancy.contains(double)
                             && check_mask.contains(double)
@@ -480,7 +497,8 @@ impl Position {
                 } else {
                     Bitboard(!0)
                 };
-                for to in attacks & !own & check_mask & allowed {
+                let targets = if tactical_only { theirs } else { !own };
+                for to in attacks & targets & check_mask & allowed {
                     moves.push(Move::new(
                         from,
                         to,
@@ -493,7 +511,7 @@ impl Position {
                 }
             }
         }
-        if self.state.checkers.0 == 0 {
+        if !tactical_only && self.state.checkers.0 == 0 {
             self.add_castles(&mut moves);
         }
         moves
