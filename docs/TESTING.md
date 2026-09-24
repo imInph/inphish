@@ -32,7 +32,7 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench 4
 ```
 
-The depth-4 signature is `95766` nodes. It must match in debug and release builds and on supported platforms.
+The depth-4 signature is `91377` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
@@ -61,6 +61,17 @@ tools/match.sh main Morstilia-6 /path/to/morstilia
 It defaults to 20 games at 1+0.01 with two concurrent games and always stops at 20 minutes of wall clock. It refuses a slower control, more than 40 games, or more concurrency unless `MATCH_OWNER_APPROVED=yes` records a specific owner approval. The PGN, log, bench line, and frozen binary go to `~/inphish-evidence/`, outside the repository. The script prints the score and a count of game terminations. An earlier revision can be the opponent by passing its frozen binary as the opponent command.
 
 The first batch on this book, revision `f52f88a` (0.1.0) at 1+0.01, scored 19 wins, 0 losses, 1 draw against Morstilia 6.0.0 (19 checkmates, one threefold repetition) and 20 wins against MaiEngine, of which 18 were MaiEngine time forfeits and 2 checkmates. MaiEngine results at 1+0.01 therefore say little about its play.
+
+## Evaluation tuning
+
+`tools/tune` fits the evaluation weights to game results (Texel tuning). It replays fastchess PGNs through the engine's own move generator, skips games not ended normally or by adjudication, keeps every third position after ply 16 that is not in check and has no capture winning material by static exchange, fits the sigmoid scale, and runs full-batch Adam with an L2 pull toward the starting weights. Material stays fixed because it is collinear with the piece-square entries. One tenth of the positions is held out for validation.
+
+```sh
+cargo run --release -p inphzugzwang-tune -- --epochs 1000 --prior 1e-8 \
+    crates/inphzugzwang-eval/src/weights.rs games/*.pgn
+```
+
+The first run used 14,125 older inphish games (89,270 positions). Without a prior the fit collapsed middlegame material and moved piece-square entries by hundreds of centipawns. With a prior of 1e-8 the validation loss fell from 0.1186 to 0.1160, but the fully tuned weights scored 15 of 40 against 0.1.0 in a 1+0.01 batch (13 wins, 23 losses, 4 draws), so they were not adopted. Those games came from weaker revisions on lopsided random openings, which is the likely limit. Only the new threat, hanging-piece, outpost and passed-pawn king-distance terms were enabled, at moderate values guided by that fit; that build scored 21.5 of 40 against 0.1.0 (15 wins, 12 losses, 13 draws, all normal terminations), which is no measurable change either way.
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 
