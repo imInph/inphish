@@ -4,9 +4,9 @@ inphish is a UCI chess engine written in Rust. It is intended to run inside a ch
 
 Run the executable with no arguments to speak UCI over standard input and output. Add that executable as a UCI engine in a chess GUI; inphish has no graphical interface of its own.
 
-## Preview release
+## Releases
 
-Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases), extract it, and select `inphish` (`inphish.exe` on Windows) as the UCI executable in your chess GUI. The preview provides Linux x86-64, Windows x86-64, macOS Apple Silicon, and macOS Intel binaries. It requires no book or network file. This is a Phase 3 preview, not the finished engine; absolute playing strength is unmeasured.
+Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases), extract it, and select `inphish` (`inphish.exe` on Windows) as the UCI executable in your chess GUI. Release archives are built for Linux x86-64, Windows x86-64, macOS Apple Silicon, and macOS Intel. No book, network file, or runtime download is required. The current public version is a preview; absolute playing strength is unmeasured.
 
 ## Build
 
@@ -37,7 +37,7 @@ target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/P
 
 `perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument.
 
-Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `499138` nodes. Search changes have been measured by SPRT against preceding revisions; absolute playing strength remains unmeasured.
+Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `487865` nodes. Some search changes have been measured by SPRT against preceding revisions; the most recent tactical-generation match was inconclusive. Absolute playing strength remains unmeasured.
 
 ## License
 
