@@ -1,5 +1,16 @@
 # inphzugzwang changelog
 
+## 1.0.0 - unreleased
+
+- Evaluation terms for pieces attacked by lesser pieces, undefended attacked pieces, knight outposts, rooks on the seventh rank, and passed-pawn king distance, all read from one indexed weight table.
+- Transposition-table probing and storing in quiescence, aspiration windows from depth 5, and a one-ply continuation history for quiet-move ordering.
+- A Texel tuner in `tools/tune`; its full fit on the available games played worse and was not adopted.
+- A committed balanced opening book, a bounded match runner, and UCI edge-case tests.
+- The release title now comes from the annotated tag's subject line.
+- `docs/ROADMAP.md` records which of the original nine phases were built, partly built, or not built.
+- Development batches at 1+0.01 against the preceding build, 40 games each: new evaluation terms 21.5/40 against 0.1.0, quiescence table 21.5/40, aspiration windows 25/40, continuation history 21.5/40. Directional only.
+- Depth-4 bench signature: 86020 nodes.
+
 ## 0.1.0 - 2026-09-24
 
 - Tapered evaluation with PeSTO piece-square tables, mobility, pawn structure, passed pawns, rook files, bishop pair, king attackers and pawn shield, and pawnless minor-piece draw scaling.

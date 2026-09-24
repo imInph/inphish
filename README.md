@@ -41,11 +41,11 @@ Correctness tests and their reference data are described in [docs/TESTING.md](do
 
 ## Strength
 
-No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches at 10+0.1 with Hash 16 MiB, one thread, and ten openings played with colors swapped: 19 wins, 0 losses, 1 draw against Morstilia 6.0.0, and 18 wins, 1 loss, 1 draw against MaiEngine. These are small informal samples, not a rating.
+No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches at 10+0.1 with Hash 16 MiB, one thread, and ten openings played with colors swapped: 19 wins, 0 losses, 1 draw against Morstilia 6.0.0, and 18 wins, 1 loss, 1 draw against MaiEngine. These are small informal samples, not a rating. Changes since then were checked in 40-game batches at 1+0.01 against the preceding build; see [docs/TESTING.md](docs/TESTING.md).
 
 ## Limitations
 
-inphish is single-threaded and has no opening book, endgame tablebases, NNUE, pondering, MultiPV, or strength limiting. Chess960 is not offered as a UCI option.
+inphish is single-threaded and has no opening book, endgame tablebases, NNUE, pondering, MultiPV, or strength limiting. Chess960 is not offered as a UCI option. [docs/ROADMAP.md](docs/ROADMAP.md) lists what was and was not built against the original plan.
 
 ## Acknowledgements
 
