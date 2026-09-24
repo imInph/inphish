@@ -901,6 +901,135 @@ impl Position {
         self.state.checkers.0 == 0 && self.legal_moves().is_empty()
     }
 
+    pub fn pieces(&self, color: Color, kind: PieceType) -> Bitboard {
+        self.state.pieces[kind.index()] & self.state.colors[color.index()]
+    }
+
+    pub fn side_pieces(&self, color: Color) -> Bitboard {
+        self.state.colors[color.index()]
+    }
+
+    pub fn has_non_pawn_material(&self, color: Color) -> bool {
+        let kings_and_pawns =
+            self.state.pieces[PieceType::King.index()] | self.state.pieces[PieceType::Pawn.index()];
+        (self.state.colors[color.index()] & !kings_and_pawns).0 != 0
+    }
+
+    /// Any earlier occurrence since the last irreversible move. Search treats a single
+    /// repetition as a draw because the side that could deviate would already have done so.
+    pub fn is_repetition(&self) -> bool {
+        self.history[self.state.reversible_start..]
+            .iter()
+            .rev()
+            .skip(1)
+            .step_by(2)
+            .any(|state| state.key == self.state.key)
+    }
+
+    pub fn make_null(&mut self) {
+        debug_assert_eq!(self.state.checkers.0, 0);
+        assert!(
+            self.history.len() < MAX_HISTORY,
+            "position history exhausted"
+        );
+        let mut key = self.state.key ^ hash_word(0x1000);
+        if let Some(ep) = self.hashable_ep() {
+            key ^= hash_word(0x2000 + ep.file() as u64);
+        }
+        self.history.push(self.state);
+        self.state.ep = None;
+        self.state.halfmove = self.state.halfmove.saturating_add(1);
+        self.state.side = self.state.side.other();
+        // A null move breaks any repetition cycle; positions on either side of it must not match.
+        self.state.reversible_start = self.history.len();
+        self.state.key = key;
+        self.refresh_checks();
+        debug_assert_eq!(self.keys_from_scratch().0, self.state.key);
+    }
+
+    /// Static exchange evaluation: whether the capture sequence on the destination square
+    /// nets at least `threshold` for the side to move, using the swap-list shortcut with
+    /// x-ray attackers revealed as occupancy shrinks. Pins are ignored, as is usual.
+    pub fn see_ge(&self, mv: Move, threshold: i32) -> bool {
+        const SEE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 20_000];
+        if mv.is_castle() {
+            return threshold <= 0;
+        }
+        let from = mv.from();
+        let to = mv.to();
+        let en_passant = mv.flag() == MoveFlag::EnPassant as u8;
+        let victim = if en_passant {
+            SEE_VALUES[PieceType::Pawn.index()]
+        } else {
+            self.piece_at(to)
+                .map_or(0, |piece| SEE_VALUES[piece.kind.index()])
+        };
+        let promotion_gain = mv.promotion().map_or(0, |kind| {
+            SEE_VALUES[kind.index()] - SEE_VALUES[PieceType::Pawn.index()]
+        });
+        let mut swap = victim + promotion_gain - threshold;
+        if swap < 0 {
+            return false;
+        }
+        let Some(mover) = self.piece_at(from) else {
+            return false;
+        };
+        swap = SEE_VALUES[mv.promotion().unwrap_or(mover.kind).index()] - swap;
+        if swap <= 0 {
+            return true;
+        }
+        let mut occupancy = (self.occupied() ^ from.bit()) | to.bit();
+        if en_passant {
+            occupancy = occupancy & !Square::new(to.file(), from.rank()).bit();
+        }
+        let diagonal = self.state.pieces[PieceType::Bishop.index()]
+            | self.state.pieces[PieceType::Queen.index()];
+        let straight = self.state.pieces[PieceType::Rook.index()]
+            | self.state.pieces[PieceType::Queen.index()];
+        let mut attackers = (self.attackers(to, Color::White, occupancy)
+            | self.attackers(to, Color::Black, occupancy))
+            & occupancy;
+        let mut side = mover.color;
+        let mut result = true;
+        loop {
+            side = side.other();
+            attackers = attackers & occupancy;
+            let side_attackers = attackers & self.state.colors[side.index()];
+            if side_attackers.0 == 0 {
+                break;
+            }
+            result = !result;
+            let kind = [
+                PieceType::Pawn,
+                PieceType::Knight,
+                PieceType::Bishop,
+                PieceType::Rook,
+                PieceType::Queen,
+                PieceType::King,
+            ]
+            .into_iter()
+            .find(|kind| (side_attackers & self.state.pieces[kind.index()]).0 != 0)
+            .expect("an attacker has a piece type");
+            if kind == PieceType::King {
+                let defended = (attackers & self.state.colors[side.other().index()]).0 != 0;
+                return if defended { !result } else { result };
+            }
+            swap = SEE_VALUES[kind.index()] - swap;
+            if swap < i32::from(result) {
+                break;
+            }
+            let used = side_attackers & self.state.pieces[kind.index()];
+            occupancy = occupancy ^ Bitboard(used.0 & used.0.wrapping_neg());
+            if matches!(kind, PieceType::Pawn | PieceType::Bishop | PieceType::Queen) {
+                attackers = attackers | (bishop_attacks(to, occupancy) & diagonal);
+            }
+            if matches!(kind, PieceType::Rook | PieceType::Queen) {
+                attackers = attackers | (rook_attacks(to, occupancy) & straight);
+            }
+        }
+        result
+    }
+
     pub fn format_move(&self, mv: Move, chess960: bool) -> String {
         let destination = if mv.is_castle() && !chess960 {
             Square::new(
