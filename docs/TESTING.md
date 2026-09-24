@@ -75,7 +75,7 @@ The first run used 14,125 older inphish games (89,270 positions). Without a prio
 
 ## Search changes after 0.1.0
 
-Each candidate played 40 games at 1+0.01 against the preceding build (Hash 16 MiB, two concurrent games, 20 balanced openings with colors swapped). Transposition-table probing and storing in quiescence scored 21.5 of 40 (14 wins, 11 losses, 15 draws) and was kept as a standard, neutral change. Adding an improving flag to reverse futility, late move pruning, and late move reductions on top of it scored 15 of 40 (6 wins, 16 losses, 18 draws) and was dropped.
+Each candidate played 40 games at 1+0.01 against the preceding build (Hash 16 MiB, two concurrent games, 20 balanced openings with colors swapped). Transposition-table probing and storing in quiescence scored 21.5 of 40 (14 wins, 11 losses, 15 draws) and was kept as a standard, neutral change. Adding an improving flag to reverse futility, late move pruning, and late move reductions on top of it scored 15 of 40 (6 wins, 16 losses, 18 draws) and was dropped. Aspiration windows from depth 5, starting at 25 centipawns around the previous score and doubling on each fail, scored 25 of 40 against the quiescence-table build (17 wins, 7 losses, 16 draws, all normal terminations). The depth-4 bench does not reach them, so the signature is unchanged.
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 

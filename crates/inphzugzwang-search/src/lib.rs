@@ -141,45 +141,39 @@ pub fn search_with_table(
         if worker.should_stop() {
             break;
         }
-        worker.pv_len[0] = 0;
-        let mut alpha = -INF;
-        let mut best_score = -INF;
-        let mut iteration_best = best;
         let iteration_start_nodes = worker.nodes;
-        let mut best_move_nodes = 0;
         let mut ordered = candidates.clone();
         ordered.sort_by_key(|&mv| -worker.move_score(mv, best, 0));
-        for (index, mv) in ordered.into_iter().enumerate() {
-            if worker.should_stop() {
-                break;
-            }
-            let before = worker.nodes;
-            worker.position.make(mv);
-            let mut score = if index == 0 {
-                -worker.negamax(depth as i32 - 1, -INF, -alpha, 1, true)
+        // Aspiration: search a narrow window around the last score and widen it on a fail,
+        // since most iterations land close to the previous one and a narrow window prunes more.
+        let mut delta = 25;
+        let (mut low, mut high) =
+            if depth >= 5 && completed.depth > 0 && completed.score.abs() < MATE_BOUND {
+                (completed.score - delta, completed.score + delta)
             } else {
-                -worker.negamax(depth as i32 - 1, -alpha - 1, -alpha, 1, true)
+                (-INF, INF)
             };
-            if index > 0 && score > alpha && !worker.aborted {
-                score = -worker.negamax(depth as i32 - 1, -INF, -alpha, 1, true);
-            }
-            worker.position.unmake();
+        let (best_score, iteration_best, best_move_nodes) = loop {
+            let (score, mv, nodes) = worker.search_root(depth, &ordered, low, high);
             if worker.aborted {
-                break;
+                break (score, mv, nodes);
             }
-            if score > best_score {
-                best_score = score;
-                iteration_best = Some(mv);
-                best_move_nodes = worker.nodes - before;
-                worker.pv[0][0] = mv;
-                let child_len = worker.pv_len[1].min(MAX_PLY - 1);
-                for index in 0..child_len {
-                    worker.pv[0][index + 1] = worker.pv[1][index];
-                }
-                worker.pv_len[0] = child_len + 1;
+            if score <= low && low > -INF {
+                high = (low + high) / 2;
+                low = score - delta;
+            } else if score >= high && high < INF {
+                high = score + delta;
+            } else {
+                break (score, mv, nodes);
             }
-            alpha = alpha.max(score);
-        }
+            delta *= 2;
+            if delta > 400 {
+                low = -INF;
+                high = INF;
+            }
+            low = low.max(-INF);
+            high = high.min(INF);
+        };
         if worker.aborted || best_score == -INF {
             break;
         }
@@ -189,7 +183,7 @@ pub fn search_with_table(
         } else {
             0
         };
-        best = iteration_best;
+        best = iteration_best.or(best);
         completed = Info {
             depth,
             seldepth: worker.seldepth,
@@ -243,6 +237,55 @@ pub fn search_with_table(
 }
 
 impl Search<'_> {
+    fn search_root(
+        &mut self,
+        depth: u8,
+        moves: &[Move],
+        mut alpha: i32,
+        beta: i32,
+    ) -> (i32, Option<Move>, u64) {
+        self.pv_len[0] = 0;
+        let mut best_score = -INF;
+        let mut iteration_best = None;
+        let mut best_move_nodes = 0;
+        for (index, &mv) in moves.iter().enumerate() {
+            if self.should_stop() {
+                break;
+            }
+            let before = self.nodes;
+            self.position.make(mv);
+            let child_depth = depth as i32 - 1;
+            let mut score = if index == 0 {
+                -self.negamax(child_depth, -beta, -alpha, 1, true)
+            } else {
+                -self.negamax(child_depth, -alpha - 1, -alpha, 1, true)
+            };
+            if index > 0 && score > alpha && score < beta && !self.aborted {
+                score = -self.negamax(child_depth, -beta, -alpha, 1, true);
+            }
+            self.position.unmake();
+            if self.aborted {
+                break;
+            }
+            if score > best_score {
+                best_score = score;
+                iteration_best = Some(mv);
+                best_move_nodes = self.nodes - before;
+                self.pv[0][0] = mv;
+                let child_len = self.pv_len[1].min(MAX_PLY - 1);
+                for index in 0..child_len {
+                    self.pv[0][index + 1] = self.pv[1][index];
+                }
+                self.pv_len[0] = child_len + 1;
+            }
+            alpha = alpha.max(score);
+            if alpha >= beta {
+                break;
+            }
+        }
+        (best_score, iteration_best, best_move_nodes)
+    }
+
     fn refresh_ponder(&mut self) {
         if self.timed_started.is_none() && self.control.ponderhit.load(Ordering::Relaxed) {
             self.timed_started = Some(Instant::now());
