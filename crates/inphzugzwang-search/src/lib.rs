@@ -418,7 +418,7 @@ impl Search<'_> {
         &mut self,
         mut depth: i32,
         mut alpha: i32,
-        beta: i32,
+        mut beta: i32,
         ply: usize,
         allow_null: bool,
     ) -> i32 {
@@ -445,6 +445,13 @@ impl Search<'_> {
         }
         if self.position.is_fifty_move_draw() {
             return 0;
+        }
+        // No line from here can mate faster than a mate at the next ply or be mated
+        // sooner than now, so a window outside those bounds is already decided.
+        alpha = alpha.max(-MATE + ply as i32);
+        beta = beta.min(MATE - ply as i32 - 1);
+        if alpha >= beta {
+            return alpha;
         }
         let key = self.position.key();
         let pv_node = beta - alpha > 1;
