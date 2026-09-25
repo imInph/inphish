@@ -177,3 +177,56 @@ fn uci_chess960_castling() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_multipv_lines() {
+    let mut engine = Engine::spawn();
+    engine.send("setoption name MultiPV value 3");
+    engine.send("position startpos moves e2e4");
+    engine.send("go depth 5");
+    let mut last = Vec::new();
+    loop {
+        let line = engine.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        if line.starts_with("bestmove ") {
+            let first = last
+                .first()
+                .map(|pv: &String| pv.split(' ').next().unwrap());
+            assert_eq!(first, Some(&line[9..13]), "{line}");
+            break;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let at = |key: &str| fields[fields.iter().position(|&word| word == key).unwrap() + 1];
+        let index: usize = at("multipv").parse().unwrap();
+        if index == 1 {
+            last.clear();
+        }
+        assert_eq!(index, last.len() + 1, "{line}");
+        let pv = fields[fields.iter().position(|&word| word == "pv").unwrap() + 1..].join(" ");
+        last.push(pv);
+    }
+    assert_eq!(last.len(), 3);
+    let mut heads: Vec<_> = last
+        .iter()
+        .map(|pv| pv.split(' ').next().unwrap())
+        .collect();
+    heads.sort_unstable();
+    heads.dedup();
+    assert_eq!(heads.len(), 3, "{last:?}");
+
+    engine.send("setoption name MultiPV value 50");
+    engine.send("position fen 7k/8/8/8/8/8/8/K7 w - - 0 1");
+    engine.send("go depth 2");
+    let mut most = 0;
+    loop {
+        let line = engine.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        if line.starts_with("bestmove ") {
+            break;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let index = fields.iter().position(|&word| word == "multipv").unwrap();
+        most = most.max(fields[index + 1].parse::<usize>().unwrap());
+    }
+    assert_eq!(most, 3);
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}

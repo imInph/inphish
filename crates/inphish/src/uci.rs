@@ -36,6 +36,7 @@ struct Engine {
     overhead: u64,
     hash_mb: u32,
     hash: Arc<TranspositionTable>,
+    multipv: usize,
     chess960: bool,
     debug: bool,
 }
@@ -65,6 +66,7 @@ pub fn run() -> io::Result<()> {
         overhead: 20,
         hash_mb: 16,
         hash: Arc::new(TranspositionTable::new(16).expect("default hash allocation failed")),
+        multipv: 1,
         chess960: false,
         debug: false,
     };
@@ -138,6 +140,7 @@ impl Engine {
                 )?;
                 write_line(out, "option name Hash type spin default 16 min 1 max 1024")?;
                 write_line(out, "option name Clear Hash type button")?;
+                write_line(out, "option name MultiPV type spin default 1 min 1 max 256")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "uciok")?;
             }
@@ -157,6 +160,7 @@ impl Engine {
                 let mut limits =
                     parse_go(&words[1..], &self.position, self.overhead, self.chess960);
                 limits.started = Some(started);
+                limits.multipv = self.multipv;
                 if self.active.is_some() {
                     self.stop();
                     self.pending = Some(limits);
@@ -289,6 +293,10 @@ impl Engine {
             }
         } else if name == "clear hash" {
             self.clear_hash();
+        } else if name == "multipv" {
+            if let Ok(lines) = value.parse::<usize>() {
+                self.multipv = lines.clamp(1, 256);
+            }
         } else if name == "uci_chess960" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.chess960 = enabled;
@@ -437,8 +445,8 @@ fn format_info(position: &Position, chess960: bool, info: &Info) -> String {
     let millis = info.elapsed.as_millis() as u64;
     let nps = info.nodes.saturating_mul(1000) / millis.max(1);
     let mut line = format!(
-        "info depth {} seldepth {} multipv 1 score {} nodes {} nps {} hashfull {} tbhits 0 time {} pv",
-        info.depth, info.seldepth, uci_score(info.score), info.nodes, nps, info.hashfull, millis
+        "info depth {} seldepth {} multipv {} score {} nodes {} nps {} hashfull {} tbhits 0 time {} pv",
+        info.depth, info.seldepth, info.multipv.max(1), uci_score(info.score), info.nodes, nps, info.hashfull, millis
     );
     let mut after = position.clone();
     for &mv in &info.pv {

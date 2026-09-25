@@ -27,6 +27,8 @@ pub struct Limits {
     pub ponder: bool,
     pub searchmoves: Vec<Move>,
     pub searchmoves_only: bool,
+    /// Number of principal variations to report; 0 and 1 both mean one.
+    pub multipv: usize,
     pub immediate: bool,
     pub started: Option<Instant>,
 }
@@ -40,6 +42,7 @@ pub struct Info {
     pub elapsed: Duration,
     pub hashfull: u16,
     pub pv: Vec<Move>,
+    pub multipv: usize,
 }
 
 pub struct Result {
@@ -122,6 +125,7 @@ pub fn search_with_table(
         elapsed: Duration::ZERO,
         hashfull: 0,
         pv: fallback.into_iter().collect(),
+        multipv: 1,
     };
     if candidates.is_empty() {
         completed.score = if worker.position.checkers().0 != 0 {
@@ -137,6 +141,8 @@ pub fn search_with_table(
     }
     let mut best = fallback;
     let mut stable_best = 0_u8;
+    let line_count = worker.limits.multipv.clamp(1, candidates.len());
+    let mut lines: Vec<Info> = Vec::new();
     let max_depth = worker
         .limits
         .depth
@@ -197,8 +203,19 @@ pub fn search_with_table(
             elapsed: worker.started.elapsed(),
             hashfull: worker.tt.hashfull(),
             pv: worker.pv[0][..worker.pv_len[0]].to_vec(),
+            multipv: 1,
         };
         on_info(completed.clone());
+        if line_count > 1 {
+            worker.search_lines(
+                depth,
+                &ordered,
+                &completed,
+                &mut lines,
+                line_count,
+                &mut on_info,
+            );
+        }
         if !worker.limits.infinite
             && (!worker.limits.ponder || worker.control.ponderhit.load(Ordering::Relaxed))
             && (candidates.len() == 1 || best_score.abs() >= MATE - depth as i32)
@@ -235,6 +252,13 @@ pub fn search_with_table(
     completed.elapsed = worker.started.elapsed();
     completed.hashfull = worker.tt.hashfull();
     on_info(completed.clone());
+    for line in lines.iter_mut().skip(1) {
+        line.nodes = completed.nodes;
+        line.seldepth = completed.seldepth;
+        line.elapsed = completed.elapsed;
+        line.hashfull = completed.hashfull;
+        on_info(line.clone());
+    }
     Result {
         best,
         info: completed,
@@ -242,6 +266,55 @@ pub fn search_with_table(
 }
 
 impl Search<'_> {
+    /// Searches the lines after the first at `depth`, each over the root moves not already
+    /// heading an earlier line. A line whose search is cut short keeps its previous depth.
+    fn search_lines(
+        &mut self,
+        depth: u8,
+        ordered: &[Move],
+        first: &Info,
+        lines: &mut Vec<Info>,
+        count: usize,
+        on_info: &mut impl FnMut(Info),
+    ) {
+        if lines.is_empty() {
+            lines.push(first.clone());
+        } else {
+            lines[0] = first.clone();
+        }
+        let mut excluded: Vec<Move> = first.pv.first().copied().into_iter().collect();
+        for index in 1..count {
+            let previous = lines.get(index).and_then(|line| line.pv.first().copied());
+            let mut remaining: Vec<Move> = ordered
+                .iter()
+                .copied()
+                .filter(|mv| !excluded.contains(mv))
+                .collect();
+            remaining.sort_by_key(|&mv| -self.move_score(mv, previous, 0));
+            let (score, mv, _) = self.search_root(depth, &remaining, -INF, INF);
+            let Some(mv) = mv.filter(|_| !self.aborted && score > -INF) else {
+                return;
+            };
+            excluded.push(mv);
+            let info = Info {
+                depth,
+                seldepth: self.seldepth,
+                score,
+                nodes: self.nodes,
+                elapsed: self.started.elapsed(),
+                hashfull: self.tt.hashfull(),
+                pv: self.pv[0][..self.pv_len[0]].to_vec(),
+                multipv: index + 1,
+            };
+            on_info(info.clone());
+            if index < lines.len() {
+                lines[index] = info;
+            } else {
+                lines.push(info);
+            }
+        }
+    }
+
     fn search_root(
         &mut self,
         depth: u8,
