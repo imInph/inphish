@@ -43,14 +43,14 @@ Correctness tests and their reference data are described in [docs/TESTING.md](do
 
 No rating-list Elo has been measured. The table places each release on Stockfish 19's `UCI_Elo` scale: Stockfish was limited to a series of `UCI_Elo` settings, inphish played 20 games against each with the openings' colors swapped, and one Elo per version was fitted to all its results by maximum likelihood (95% ranges). Stockfish calibrates `UCI_Elo` at much longer time controls and its limiter does not scale with time the way a normal engine does, so compare versions within one column only, and treat the numbers as labels on a shared scale rather than ratings. Match scores are wins / losses / draws over 20 games.
 
-| Version | Elo, 1+0.01 | Elo, 10+0.1 | Morstilia 6.0.0 | MaiEngine |
+| Version | Elo, 1+0.01 | Elo, 10+0.1 | [Morstilia V6](https://github.com/ALPDM447/MorstiliaChessEngine) | [MaiEngine](https://github.com/Justmaii/MaiEngine) |
 |---|---|---|---|---|
-| 0.1.0-preview.2 | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) |
-| 0.1.0 | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) |
-| 1.0.0 | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
-| 2.0.0 | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
-| 3.0.0 | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
-| 3.1.0 | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+| [inphish v0.1.0 pre 2](https://github.com/imInph/inphish/releases/tag/v0.1.0-preview.2) | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) |
+| [inphish v0.1.0](https://github.com/imInph/inphish/releases/tag/v0.1.0) | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) |
+| [inphish v1.0.0](https://github.com/imInph/inphish/releases/tag/v1.0.0) | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
+| [inphish v2.0.0](https://github.com/imInph/inphish/releases/tag/v2.0.0) | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+| [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
+| [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
 
 1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
 2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
