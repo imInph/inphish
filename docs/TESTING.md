@@ -85,6 +85,25 @@ Revision `7c66dd8` (1.0.0, bench 86020) played through `tools/match.sh` at 1+0.0
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 
+## Stockfish ladder
+
+Stockfish 19 (the official `sf_19` macOS build) with `UCI_LimitStrength` on and a given `UCI_Elo` serves as a graded opponent, passed through `MATCH_OPPONENT_OPTIONS="option.UCI_LimitStrength=true option.UCI_Elo=N option.Hash=16"`. Stockfish calibrates `UCI_Elo` at much longer time controls, so at 1+0.01 the numbers are labels for rungs, not ratings, and 20 games per rung give only a rough position.
+
+Version 1.0.0 (`62b57fd`, bench 86020), 20 games per rung at 1+0.01 on the balanced book with colors swapped:
+
+| UCI_Elo | Wins | Losses | Draws | Score |
+|---|---|---|---|---|
+| 2000 | 15 | 4 | 1 | 15.5 |
+| 2200 | 17 | 2 | 1 | 17.5 |
+| 2400 | 10 | 7 | 3 | 11.5 |
+| 2600 | 10 | 6 | 4 | 12.0 |
+| 2800 | 1 | 15 | 4 | 3.0 |
+| 3000 | 0 | 15 | 5 | 2.5 |
+
+All 120 games ended by checkmate or a draw rule. The even score falls between the 2600 and 2800 rungs.
+
+Revision `0f78f08`, which adds the Chess960 option, played Stockfish at `UCI_Elo` 2400 on the Chess960 book with `MATCH_VARIANT=fischerandom`: 6 wins, 13 losses, 1 draw. All games ended by checkmate or repetition with no illegal move, which is the point of the check.
+
 ## Optional SPRT
 
 The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
