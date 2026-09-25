@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use inphzugzwang_core::{Color, Position};
 use inphzugzwang_search::{
-    search_with_table, uci_score, wdl, Control, Info, Limits, TranspositionTable,
+    search_with_table, uci_score, wdl, Control, Info, Limits, TranspositionTable, STRENGTH_MAX,
+    STRENGTH_MIN,
 };
 
 use crate::bench;
@@ -38,6 +39,8 @@ struct Engine {
     hash: Arc<TranspositionTable>,
     multipv: usize,
     threads: usize,
+    limit_strength: bool,
+    elo: u16,
     show_wdl: bool,
     chess960: bool,
     debug: bool,
@@ -70,6 +73,8 @@ pub fn run() -> io::Result<()> {
         hash: Arc::new(TranspositionTable::new(16).expect("default hash allocation failed")),
         multipv: 1,
         threads: 1,
+        limit_strength: false,
+        elo: STRENGTH_MAX,
         show_wdl: false,
         chess960: false,
         debug: false,
@@ -146,6 +151,16 @@ impl Engine {
                 write_line(out, "option name Clear Hash type button")?;
                 write_line(out, "option name Threads type spin default 1 min 1 max 256")?;
                 write_line(out, "option name MultiPV type spin default 1 min 1 max 256")?;
+                write_line(
+                    out,
+                    "option name UCI_LimitStrength type check default false",
+                )?;
+                write_line(
+                    out,
+                    &format!(
+                        "option name UCI_Elo type spin default {STRENGTH_MAX} min {STRENGTH_MIN} max {STRENGTH_MAX}"
+                    ),
+                )?;
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "uciok")?;
@@ -168,6 +183,7 @@ impl Engine {
                 limits.started = Some(started);
                 limits.multipv = self.multipv;
                 limits.threads = self.threads;
+                limits.strength = self.limit_strength.then_some(self.elo);
                 if self.active.is_some() {
                     self.stop();
                     self.pending = Some(limits);
@@ -308,6 +324,14 @@ impl Engine {
         } else if name == "multipv" {
             if let Ok(lines) = value.parse::<usize>() {
                 self.multipv = lines.clamp(1, 256);
+            }
+        } else if name == "uci_limitstrength" {
+            if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
+                self.limit_strength = enabled;
+            }
+        } else if name == "uci_elo" {
+            if let Ok(elo) = value.parse::<u16>() {
+                self.elo = elo.clamp(STRENGTH_MIN, STRENGTH_MAX);
             }
         } else if name == "uci_showwdl" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {

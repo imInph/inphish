@@ -22,7 +22,7 @@ The executable is `target/release/inphish` (`inphish.exe` on Windows). Building 
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-The engine uses iterative deepening, principal variation search, a transposition table, null-move and futility pruning, late move reductions, killer, history and static-exchange move ordering, and quiescence search. The evaluation is a tapered hand-written function with PeSTO piece-square tables, mobility, pawn structure, passed pawns, and king safety terms. UCI options are `Hash` (16 MiB by default), `Clear Hash`, `Threads` (1 by default), `Move Overhead` (20 ms by default), `MultiPV` (1 by default), `UCI_ShowWDL`, and `UCI_Chess960`. Standard chess is the default; with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook.
+The engine uses iterative deepening, principal variation search, a transposition table, null-move and futility pruning, late move reductions, killer, history and static-exchange move ordering, and quiescence search. The evaluation is a tapered hand-written function with PeSTO piece-square tables, mobility, pawn structure, passed pawns, and king safety terms. UCI options are `Hash` (16 MiB by default), `Clear Hash`, `Threads` (1 by default), `Move Overhead` (20 ms by default), `MultiPV` (1 by default), `UCI_LimitStrength` with `UCI_Elo` (1320 to 2600), `UCI_ShowWDL`, and `UCI_Chess960`. Standard chess is the default; with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook.
 
 ## Diagnostic commands
 
@@ -45,7 +45,7 @@ No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches a
 
 ## Limitations
 
-inphish has no opening book, endgame tablebases, NNUE, pondering, or strength limiting. [docs/ROADMAP.md](docs/ROADMAP.md) lists what was and was not built against the original plan.
+inphish has no opening book, endgame tablebases, NNUE, or pondering. [docs/ROADMAP.md](docs/ROADMAP.md) lists what was and was not built against the original plan.
 
 ## Acknowledgements
 

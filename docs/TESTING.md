@@ -99,6 +99,8 @@ Two changes were rejected. A lazily scored, selection-picked move list gave no s
 
 Lazy SMP (`a47abbd`) with two threads against the same build with one thread, 20 games at 1+0.01 with one game at a time: 8 wins, 5 losses, 7 draws (11.5 of 20), with no time losses.
 
+`UCI_Elo` was calibrated against Stockfish 19 at the same `UCI_Elo`, 20 games at 1+0.01 on the balanced book. A first curve (1,000 nodes doubling every 128 Elo, weakness from 138) scored 1 of 20 at 1600 and 14.5 of 20 at 2200. A second (doubling every 240 Elo, weakness from 107) scored 3 and 6. The adopted curve (2,000 nodes doubling every 240 Elo, weakness from 91) scored 7 of 20 at 1600 (7 wins, 13 losses) and 13 of 20 at 2200 (12 wins, 6 losses, 2 draws). The setting is therefore approximate, within very roughly 150 Elo of Stockfish's scale at this time control.
+
 ## Stockfish ladder
 
 Stockfish 19 (the official `sf_19` macOS build) with `UCI_LimitStrength` on and a given `UCI_Elo` serves as a graded opponent, passed through `MATCH_OPPONENT_OPTIONS="option.UCI_LimitStrength=true option.UCI_Elo=N option.Hash=16"`. Stockfish calibrates `UCI_Elo` at much longer time controls, so at 1+0.01 the numbers are labels for rungs, not ratings, and 20 games per rung give only a rough position.

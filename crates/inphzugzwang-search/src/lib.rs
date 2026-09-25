@@ -34,6 +34,8 @@ pub struct Limits {
     pub multipv: usize,
     /// Search threads including the main one; 0 and 1 both mean one.
     pub threads: usize,
+    /// Playing strength to imitate, as an Elo on the scale of `UCI_Elo`.
+    pub strength: Option<u16>,
     pub immediate: bool,
     pub started: Option<Instant>,
 }
@@ -139,12 +141,20 @@ pub fn search_with_table(
 
 fn search_main(
     position: Position,
-    limits: Limits,
+    mut limits: Limits,
     control: &Control,
     tt: &TranspositionTable,
     shared_nodes: &AtomicU64,
     mut on_info: impl FnMut(Info),
 ) -> Result {
+    if let Some(elo) = limits.strength {
+        let cap = strength_nodes(elo);
+        limits.nodes = Some(limits.nodes.map_or(cap, |nodes| nodes.min(cap)));
+    }
+    let seed = position.key()
+        ^ std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
     let mut worker = Search::new(position, limits, control, tt, shared_nodes);
     let candidates = worker.root_moves();
     let fallback = candidates.first().copied();
@@ -172,7 +182,12 @@ fn search_main(
     }
     let mut best = fallback;
     let mut stable_best = 0_u8;
-    let line_count = worker.limits.multipv.clamp(1, candidates.len());
+    let reported = worker.limits.multipv.clamp(1, candidates.len());
+    let line_count = if worker.limits.strength.is_some() {
+        reported.max(STRENGTH_LINES).min(candidates.len())
+    } else {
+        reported
+    };
     let mut lines: Vec<Info> = Vec::new();
     let max_depth = worker
         .limits
@@ -288,12 +303,58 @@ fn search_main(
         line.seldepth = completed.seldepth;
         line.elapsed = completed.elapsed;
         line.hashfull = completed.hashfull;
-        on_info(line.clone());
+        if line.multipv <= reported {
+            on_info(line.clone());
+        }
+    }
+    if let (Some(elo), true) = (worker.limits.strength, lines.len() > 1) {
+        let chosen = &lines[weakened_choice(&lines, elo, seed)];
+        return Result {
+            best: chosen.pv.first().copied().or(best),
+            info: chosen.clone(),
+        };
     }
     Result {
         best,
         info: completed,
     }
+}
+
+/// Lines searched when strength is limited, so that a weaker move can be chosen.
+const STRENGTH_LINES: usize = 4;
+
+/// Node budget for a limited strength: 2,000 nodes at the lowest setting, doubling every
+/// 240 Elo.
+fn strength_nodes(elo: u16) -> u64 {
+    let steps = f64::from(elo.clamp(STRENGTH_MIN, STRENGTH_MAX) - STRENGTH_MIN) / 240.0;
+    (2000.0 * steps.exp2()) as u64
+}
+
+pub const STRENGTH_MIN: u16 = 1320;
+pub const STRENGTH_MAX: u16 = 2600;
+
+/// Chooses a line in the manner of Stockfish's skill level: each line's score gets a push
+/// that grows with its distance from the best line and with a random share of the spread
+/// of scores, both scaled by the weakness, and the line with the highest total is played.
+fn weakened_choice(lines: &[Info], elo: u16, seed: u64) -> usize {
+    let weakness = i32::from((STRENGTH_MAX - elo.clamp(STRENGTH_MIN, STRENGTH_MAX)) / 14).max(1);
+    let top = lines[0].score;
+    let delta = (top - lines[lines.len() - 1].score).clamp(0, 100);
+    let mut state = seed | 1;
+    let mut chosen = 0;
+    let mut chosen_total = i32::MIN;
+    for (index, line) in lines.iter().enumerate() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let random = (state % weakness as u64) as i32;
+        let push = (weakness * (top - line.score).min(1000) + delta * random) / 128;
+        if line.score + push > chosen_total {
+            chosen_total = line.score + push;
+            chosen = index;
+        }
+    }
+    chosen
 }
 
 impl<'a> Search<'a> {
@@ -406,7 +467,9 @@ impl<'a> Search<'a> {
                 pv: self.pv[0][..self.pv_len[0]].to_vec(),
                 multipv: index + 1,
             };
-            on_info(info.clone());
+            if index < self.limits.multipv.max(1) {
+                on_info(info.clone());
+            }
             if index < lines.len() {
                 lines[index] = info;
             } else {
