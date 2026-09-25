@@ -16,6 +16,9 @@ const INF: i32 = 32_000;
 const MATE_BOUND: i32 = MATE - MAX_PLY as i32;
 const HISTORY_MAX: i32 = 16_384;
 const PIECE_SQUARES: usize = 12 * 64;
+const CORRECTION_ENTRIES: usize = 16_384;
+const CORRECTION_GRAIN: i32 = 256;
+const CORRECTION_MAX: i32 = 64 * CORRECTION_GRAIN;
 
 #[derive(Clone, Default)]
 pub struct Limits {
@@ -69,6 +72,7 @@ struct Search<'a> {
     history: Box<[[[i32; 64]; 64]; 2]>,
     continuation: Box<[i32]>,
     counters: Box<[Move]>,
+    correction: Box<[[i32; CORRECTION_ENTRIES]; 2]>,
     played: [Option<usize>; MAX_PLY],
     reductions: [[u8; 64]; 64],
     pv: [[Move; MAX_PLY]; MAX_PLY],
@@ -108,6 +112,10 @@ pub fn search_with_table(
         history: Box::new([[[0; 64]; 64]; 2]),
         continuation: vec![0; PIECE_SQUARES * PIECE_SQUARES].into_boxed_slice(),
         counters: vec![Move::NULL; PIECE_SQUARES].into_boxed_slice(),
+        correction: vec![[0; CORRECTION_ENTRIES]; 2]
+            .into_boxed_slice()
+            .try_into()
+            .expect("two sides"),
         played: [None; MAX_PLY],
         reductions: reduction_table(),
         pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
@@ -478,10 +486,15 @@ impl Search<'_> {
                 }
             }
         }
-        let static_eval = if in_check {
+        let raw_eval = if in_check {
             0
         } else {
             hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
+        };
+        let static_eval = if in_check {
+            0
+        } else {
+            self.corrected(raw_eval)
         };
         if !pv_node && !in_check && beta.abs() < MATE_BOUND {
             // Reverse futility: a quiet position this far above beta at low depth is not
@@ -596,26 +609,57 @@ impl Search<'_> {
                 quiet_count += 1;
             }
         }
+        let bound = if best >= beta {
+            Bound::Lower
+        } else if best <= original_alpha {
+            Bound::Upper
+        } else {
+            Bound::Exact
+        };
+        if !in_check
+            && (best_move == Move::NULL || is_quiet(best_move))
+            && best.abs() < MATE_BOUND
+            && !(bound == Bound::Lower && best <= static_eval)
+            && !(bound == Bound::Upper && best >= static_eval)
+        {
+            self.update_correction(best - static_eval, depth);
+        }
         self.tt.store(
             key,
             ply,
             Record {
                 mv: best_move,
                 score: best,
-                eval: static_eval,
+                eval: raw_eval,
                 depth: depth as u8,
-                bound: if best >= beta {
-                    Bound::Lower
-                } else if best <= original_alpha {
-                    Bound::Upper
-                } else {
-                    Bound::Exact
-                },
+                bound,
                 pv: pv_node,
                 age: 0,
             },
         );
         best
+    }
+
+    /// Pawn-structure correction history: the static evaluation tends to misjudge the
+    /// same pawn structure in the same direction, so the average error that searches
+    /// found for it is added back to later evaluations of positions sharing it.
+    fn corrected(&self, raw: i32) -> i32 {
+        let (side, slot) = self.correction_slot();
+        let correction = self.correction[side][slot] / CORRECTION_GRAIN;
+        (raw + correction).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+    }
+
+    fn update_correction(&mut self, error: i32, depth: i32) {
+        let weight = (depth + 1).min(16);
+        let (side, slot) = self.correction_slot();
+        let entry = &mut self.correction[side][slot];
+        *entry = ((*entry * (256 - weight) + error * CORRECTION_GRAIN * weight) / 256)
+            .clamp(-CORRECTION_MAX, CORRECTION_MAX);
+    }
+
+    fn correction_slot(&self) -> (usize, usize) {
+        let side = self.position.side_to_move().index();
+        (side, self.position.pawn_key() as usize % CORRECTION_ENTRIES)
     }
 
     fn update_history(&mut self, side: usize, mv: Move, bonus: i32, ply: usize) {
@@ -679,10 +723,15 @@ impl Search<'_> {
                 _ => {}
             }
         }
+        let raw_eval = if in_check {
+            0
+        } else {
+            hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
+        };
         let stand_pat = if in_check {
             -INF
         } else {
-            hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
+            self.corrected(raw_eval)
         };
         if ply >= MAX_PLY - 1 {
             return if in_check { 0 } else { stand_pat };
@@ -729,7 +778,7 @@ impl Search<'_> {
             Record {
                 mv: best_move,
                 score: best,
-                eval: if in_check { 0 } else { stand_pat },
+                eval: raw_eval,
                 depth: 0,
                 bound: if best >= beta {
                     Bound::Lower
