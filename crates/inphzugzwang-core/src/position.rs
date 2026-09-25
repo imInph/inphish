@@ -323,6 +323,10 @@ impl Position {
         self.state.halfmove
     }
 
+    pub fn castling_rights(&self) -> CastlingRights {
+        self.state.castling
+    }
+
     fn is_attacked(
         &self,
         target: Square,

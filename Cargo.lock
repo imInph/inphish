@@ -10,6 +10,7 @@ dependencies = [
  "inphzugzwang-eval",
  "inphzugzwang-nnue",
  "inphzugzwang-search",
+ "inphzugzwang-syzygy",
 ]
 
 [[package]]
@@ -37,6 +38,14 @@ dependencies = [
  "inphzugzwang-core",
  "inphzugzwang-eval",
  "inphzugzwang-nnue",
+ "inphzugzwang-syzygy",
+]
+
+[[package]]
+name = "inphzugzwang-syzygy"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-core",
 ]
 
 [[package]]

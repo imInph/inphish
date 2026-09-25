@@ -333,3 +333,44 @@ fn uci_limit_strength() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_syzygy_path() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name SyzygyPath"),
+        "option name SyzygyPath type string default <empty>"
+    );
+    engine.until("uciok");
+    engine.send("setoption name SyzygyPath value /nonexistent/tables with space");
+    assert_eq!(
+        engine.until("info string"),
+        "info string found 0 tablebases"
+    );
+    engine.send("position fen 8/8/8/4k3/8/8/2KQ4/8 w - - 0 1");
+    engine.send("go depth 4");
+    assert!(engine.until("info depth 4").contains(" tbhits 0 "));
+    engine.until("bestmove ");
+    if let Ok(path) = std::env::var("SYZYGY_PATH") {
+        engine.send(&format!("setoption name SyzygyPath value {path}"));
+        assert_eq!(
+            engine.until("info string"),
+            "info string found 145 tablebases"
+        );
+        engine.send("go depth 6");
+        let info = engine.until("info depth 6");
+        assert!(info.contains(" score cp 29871 "), "{info}");
+        engine.until("bestmove ");
+        // Six pieces: the search reaches the tables through captures.
+        engine.send("position fen 8/8/3k4/8/2r5/2K2R2/5P2/7q w - - 0 1");
+        engine.send("go depth 8");
+        let info = engine.until("info depth 8");
+        let at = info.find(" tbhits ").unwrap() + 8;
+        let hits: u64 = info[at..].split(' ').next().unwrap().parse().unwrap();
+        assert!(hits > 0, "{info}");
+        engine.until("bestmove ");
+    }
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}

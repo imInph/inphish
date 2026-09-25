@@ -10,6 +10,7 @@ use inphzugzwang_search::{
     search_with_table, uci_score, wdl, Control, Info, Limits, TranspositionTable, STRENGTH_MAX,
     STRENGTH_MIN,
 };
+use inphzugzwang_syzygy::Tablebases;
 
 use crate::bench;
 
@@ -42,6 +43,7 @@ struct Engine {
     limit_strength: bool,
     elo: u16,
     show_wdl: bool,
+    tablebases: Option<Arc<Tablebases>>,
     chess960: bool,
     debug: bool,
 }
@@ -78,6 +80,7 @@ pub fn run() -> io::Result<()> {
         limit_strength: false,
         elo: STRENGTH_MAX,
         show_wdl: false,
+        tablebases: None,
         chess960: false,
         debug: false,
     };
@@ -165,6 +168,7 @@ impl Engine {
                 )?;
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
+                write_line(out, "option name SyzygyPath type string default <empty>")?;
                 write_line(out, "uciok")?;
             }
             "isready" => write_line(out, "readyok")?,
@@ -186,6 +190,7 @@ impl Engine {
                 limits.multipv = self.multipv;
                 limits.threads = self.threads;
                 limits.strength = self.limit_strength.then_some(self.elo);
+                limits.tablebases = self.tablebases.clone();
                 if self.active.is_some() {
                     self.stop();
                     self.pending = Some(limits);
@@ -204,7 +209,11 @@ impl Engine {
                 self.quitting = true;
                 self.stop();
             }
-            "setoption" => self.setoption(&words[1..]),
+            "setoption" => {
+                if let Some(message) = self.setoption(&words[1..]) {
+                    write_line(out, &message)?;
+                }
+            }
             "debug" => self.debug = words.get(1) == Some(&"on"),
             "d" if self.debug => eprintln!("{}", self.position.fen()),
             "bench" => {
@@ -291,12 +300,13 @@ impl Engine {
         }
     }
 
-    fn setoption(&mut self, words: &[&str]) {
+    /// Applies an option and returns an information line to print, if any.
+    fn setoption(&mut self, words: &[&str]) -> Option<String> {
         if !words
             .first()
             .is_some_and(|word| word.eq_ignore_ascii_case("name"))
         {
-            return;
+            return None;
         }
         let value_at = words
             .iter()
@@ -339,11 +349,19 @@ impl Engine {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.show_wdl = enabled;
             }
+        } else if name == "syzygypath" {
+            // Paths may contain spaces, so the value is the rest of the line.
+            let path = value_at.map_or(String::new(), |index| words[index + 1..].join(" "));
+            let tables = Tablebases::open(&path);
+            let message = format!("info string found {} tablebases", tables.len());
+            self.tablebases = (!tables.is_empty()).then(|| Arc::new(tables));
+            return Some(message);
         } else if name == "uci_chess960" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.chess960 = enabled;
             }
         }
+        None
     }
 
     fn clear_hash(&mut self) {
@@ -493,8 +511,8 @@ fn format_info(position: &Position, chess960: bool, show_wdl: bool, info: &Info)
         uci_score(info.score)
     };
     let mut line = format!(
-        "info depth {} seldepth {} multipv {} score {score} nodes {} nps {} hashfull {} tbhits 0 time {} pv",
-        info.depth, info.seldepth, info.multipv.max(1), info.nodes, nps, info.hashfull, millis
+        "info depth {} seldepth {} multipv {} score {score} nodes {} nps {} hashfull {} tbhits {} time {} pv",
+        info.depth, info.seldepth, info.multipv.max(1), info.nodes, nps, info.hashfull, info.tbhits, millis
     );
     let mut after = position.clone();
     for &mv in &info.pv {

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use inphzugzwang_core::{Color, Move, MoveList, PieceType, Position};
 use inphzugzwang_eval::{evaluate, VALUES};
 use inphzugzwang_nnue::{network, Accumulator};
+use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
 mod tt;
 
@@ -15,6 +16,8 @@ const MAX_PLY: usize = 128;
 const MATE: i32 = 30_000;
 const INF: i32 = 32_000;
 const MATE_BOUND: i32 = MATE - MAX_PLY as i32;
+/// Score of a tablebase win, just below the mate range so it is never shown as a mate.
+const TB_WIN: i32 = MATE_BOUND - 1;
 const HISTORY_MAX: i32 = 16_384;
 const PIECE_SQUARES: usize = 12 * 64;
 const CORRECTION_ENTRIES: usize = 16_384;
@@ -37,6 +40,7 @@ pub struct Limits {
     pub threads: usize,
     /// Playing strength to imitate, as an Elo on the scale of `UCI_Elo`.
     pub strength: Option<u16>,
+    pub tablebases: Option<Arc<Tablebases>>,
     pub immediate: bool,
     pub started: Option<Instant>,
 }
@@ -51,6 +55,7 @@ pub struct Info {
     pub hashfull: u16,
     pub pv: Vec<Move>,
     pub multipv: usize,
+    pub tbhits: u64,
 }
 
 pub struct Result {
@@ -74,6 +79,7 @@ struct Search<'a> {
     /// Nodes of the helper threads: helpers add to it in batches, the main thread reads it.
     shared_nodes: &'a AtomicU64,
     helper: bool,
+    tbhits: u64,
     seldepth: usize,
     aborted: bool,
     killers: [[Move; 2]; MAX_PLY],
@@ -109,6 +115,19 @@ pub fn search_with_table(
     on_info: impl FnMut(Info),
 ) -> Result {
     tt.next_generation();
+    let mut limits = limits;
+    // With the root in the tablebases, only the moves that keep the best result under the
+    // fifty-move rule are searched, and the search no longer probes, as in Stockfish.
+    let root_tb = limits
+        .tablebases
+        .as_deref()
+        .and_then(|tables| rank_root(tables, &position, &limits));
+    if let Some((moves, _)) = &root_tb {
+        limits.searchmoves = moves.clone();
+        limits.searchmoves_only = true;
+        limits.tablebases = None;
+    }
+    let root_tb_score = root_tb.map(|(_, score)| score);
     let shared_nodes = AtomicU64::new(0);
     let helper_control = Control {
         stop: Arc::new(AtomicBool::new(false)),
@@ -121,6 +140,7 @@ pub fn search_with_table(
             let helper_limits = Limits {
                 searchmoves: limits.searchmoves.clone(),
                 searchmoves_only: limits.searchmoves_only,
+                tablebases: limits.tablebases.clone(),
                 ..Limits::default()
             };
             let (helper_control, shared_nodes) = (&helper_control, &shared_nodes);
@@ -135,7 +155,15 @@ pub fn search_with_table(
                 })
                 .expect("helper thread could not start");
         }
-        let result = search_main(position, limits, control, tt, &shared_nodes, on_info);
+        let result = search_main(
+            position,
+            limits,
+            control,
+            tt,
+            &shared_nodes,
+            root_tb_score,
+            on_info,
+        );
         helper_control.stop.store(true, Ordering::Relaxed);
         result
     })
@@ -147,6 +175,7 @@ fn search_main(
     control: &Control,
     tt: &TranspositionTable,
     shared_nodes: &AtomicU64,
+    root_tb_score: Option<i32>,
     mut on_info: impl FnMut(Info),
 ) -> Result {
     if let Some(elo) = limits.strength {
@@ -169,6 +198,7 @@ fn search_main(
         hashfull: 0,
         pv: fallback.into_iter().collect(),
         multipv: 1,
+        tbhits: 0,
     };
     if candidates.is_empty() {
         completed.score = if worker.position.checkers().0 != 0 {
@@ -252,8 +282,9 @@ fn search_main(
             hashfull: worker.tt.hashfull(),
             pv: worker.pv[0][..worker.pv_len[0]].to_vec(),
             multipv: 1,
+            tbhits: worker.tbhits,
         };
-        on_info(completed.clone());
+        on_info(with_tb_score(&completed, root_tb_score));
         if line_count > 1 {
             worker.search_lines(
                 depth,
@@ -299,6 +330,8 @@ fn search_main(
     completed.seldepth = worker.seldepth;
     completed.elapsed = worker.started.elapsed();
     completed.hashfull = worker.tt.hashfull();
+    completed.tbhits = worker.tbhits;
+    completed = with_tb_score(&completed, root_tb_score);
     on_info(completed.clone());
     for line in lines.iter_mut().skip(1) {
         line.nodes = completed.nodes;
@@ -320,6 +353,86 @@ fn search_main(
         best,
         info: completed,
     }
+}
+
+/// The line to report: with the root in the tablebases its score is the tablebase result
+/// unless the search found a mate, while the search itself keeps using its own scores.
+fn with_tb_score(info: &Info, tb_score: Option<i32>) -> Info {
+    let mut shown = info.clone();
+    if let Some(score) = tb_score.filter(|_| info.score.abs() < MATE_BOUND) {
+        shown.score = score;
+    }
+    shown
+}
+
+/// Ranks the root moves by DTZ the way Stockfish's `root_probe` does and returns those of
+/// the best rank with the score to report, or nothing if the root is not covered.
+fn rank_root(
+    tables: &Tablebases,
+    position: &Position,
+    limits: &Limits,
+) -> Option<(Vec<Move>, i32)> {
+    if !probeable(position, tables.max_pieces()) {
+        return None;
+    }
+    let mut position = position.clone();
+    let rule50 = i32::from(position.halfmove_clock());
+    let repeated = position.is_repetition();
+    let mut ranked = Vec::new();
+    for mv in position.legal_moves().iter() {
+        if limits.searchmoves_only && !limits.searchmoves.contains(&mv) {
+            continue;
+        }
+        position.make(mv);
+        let mut dtz = if position.halfmove_clock() == 0 {
+            let (wdl, state) = tables.probe_wdl(&mut position);
+            (state != ProbeState::Fail).then(|| inphzugzwang_syzygy::dtz_before_zeroing(-wdl))
+        } else {
+            let (dtz, state) = tables.probe_dtz(&mut position);
+            (state != ProbeState::Fail).then_some(-dtz + (-dtz).signum())
+        };
+        if dtz == Some(2) && position.checkers().0 != 0 && position.legal_moves().is_empty() {
+            dtz = Some(1);
+        }
+        position.unmake();
+        let dtz = dtz?;
+        let rank = if dtz > 0 {
+            if dtz + rule50 <= 99 && !repeated {
+                1000
+            } else {
+                1000 - (dtz + rule50)
+            }
+        } else if dtz < 0 {
+            if -dtz * 2 + rule50 < 100 {
+                -1000
+            } else {
+                -1000 + (-dtz + rule50)
+            }
+        } else {
+            0
+        };
+        ranked.push((mv, rank));
+    }
+    let best = ranked.iter().map(|&(_, rank)| rank).max()?;
+    // Certain results score as won or lost; results the fifty-move rule endangers get a
+    // small score that grows as the counter leaves more room.
+    let score = if best >= 900 {
+        TB_WIN
+    } else if best > 0 {
+        (best - 800).max(3) / 2
+    } else if best == 0 {
+        WDL_DRAW
+    } else if best > -900 {
+        (best + 800).min(-3) / 2
+    } else {
+        -TB_WIN
+    };
+    let moves = ranked
+        .into_iter()
+        .filter(|&(_, rank)| rank == best)
+        .map(|(mv, _)| mv)
+        .collect();
+    Some((moves, score))
 }
 
 /// Lines searched when strength is limited, so that a weaker move can be chosen.
@@ -380,6 +493,7 @@ impl<'a> Search<'a> {
             nodes: 0,
             shared_nodes,
             helper: false,
+            tbhits: 0,
             seldepth: 0,
             aborted: false,
             killers: [[Move::NULL; 2]; MAX_PLY],
@@ -396,6 +510,64 @@ impl<'a> Search<'a> {
             pv_len: [0; MAX_PLY],
             accumulators,
         }
+    }
+
+    /// Probes the WDL tables just after a capture or pawn move, when the position has few
+    /// enough pieces and no castling rights. Returns a score when it decides the node;
+    /// a win or loss under the fifty-move rule counts as a small draw offset, as in
+    /// Stockfish.
+    fn probe_tablebases(
+        &mut self,
+        depth: i32,
+        alpha: i32,
+        beta: i32,
+        ply: usize,
+        key: u64,
+        pv_node: bool,
+    ) -> Option<i32> {
+        let tables = self.limits.tablebases.clone()?;
+        if self.position.halfmove_clock() != 0 || !probeable(&self.position, tables.max_pieces()) {
+            return None;
+        }
+        let (wdl, state) = tables.probe_wdl(&mut self.position);
+        if state == ProbeState::Fail {
+            return None;
+        }
+        self.tbhits += 1;
+        let (score, bound) = if wdl < -1 {
+            (-TB_WIN + ply as i32, Bound::Upper)
+        } else if wdl > 1 {
+            (TB_WIN - ply as i32, Bound::Lower)
+        } else {
+            (2 * wdl, Bound::Exact)
+        };
+        let decided = match bound {
+            Bound::Exact => true,
+            Bound::Lower => score >= beta,
+            Bound::Upper => score <= alpha,
+        };
+        if !decided {
+            return None;
+        }
+        let eval = if self.position.checkers().0 != 0 {
+            0
+        } else {
+            self.static_evaluation(ply)
+        };
+        self.tt.store(
+            key,
+            ply,
+            Record {
+                mv: Move::NULL,
+                score,
+                eval,
+                depth: (depth + 6).min(MAX_PLY as i32 - 1) as u8,
+                bound,
+                pv: pv_node,
+                age: 0,
+            },
+        );
+        Some(score)
     }
 
     /// Makes `mv` from `ply`, deriving the next ply's accumulator from this one.
@@ -514,6 +686,7 @@ impl<'a> Search<'a> {
                 hashfull: self.tt.hashfull(),
                 pv: self.pv[0][..self.pv_len[0]].to_vec(),
                 multipv: index + 1,
+                tbhits: self.tbhits,
             };
             if index < self.limits.multipv.max(1) {
                 on_info(info.clone());
@@ -693,6 +866,9 @@ impl<'a> Search<'a> {
                     _ => {}
                 }
             }
+        }
+        if let Some(score) = self.probe_tablebases(depth, alpha, beta, ply, key, pv_node) {
+            return score;
         }
         let raw_eval = if in_check {
             0

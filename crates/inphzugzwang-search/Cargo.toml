@@ -8,3 +8,4 @@ license = "GPL-3.0-or-later"
 inphzugzwang-core = { path = "../inphzugzwang-core" }
 inphzugzwang-eval = { path = "../inphzugzwang-eval" }
 inphzugzwang-nnue = { path = "../inphzugzwang-nnue" }
+inphzugzwang-syzygy = { path = "../inphzugzwang-syzygy" }
