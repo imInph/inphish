@@ -325,11 +325,11 @@ fn search_main(
 /// Lines searched when strength is limited, so that a weaker move can be chosen.
 const STRENGTH_LINES: usize = 4;
 
-/// Node budget for a limited strength: 2,000 nodes at the lowest setting, doubling every
+/// Node budget for a limited strength: 600 nodes at the lowest setting, doubling every
 /// 240 Elo.
 fn strength_nodes(elo: u16) -> u64 {
     let steps = f64::from(elo.clamp(STRENGTH_MIN, STRENGTH_MAX) - STRENGTH_MIN) / 240.0;
-    (2000.0 * steps.exp2()) as u64
+    (600.0 * steps.exp2()) as u64
 }
 
 pub const STRENGTH_MIN: u16 = 1320;
