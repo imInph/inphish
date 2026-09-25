@@ -120,6 +120,22 @@ All 120 games ended by checkmate or a draw rule. The even score falls between th
 
 Revision `0f78f08`, which adds the Chess960 option, played Stockfish at `UCI_Elo` 2400 on the Chess960 book with `MATCH_VARIANT=fischerandom`: 6 wins, 13 losses, 1 draw. All games ended by checkmate or repetition with no illegal move, which is the point of the check.
 
+## 2.0 candidate checks
+
+Revision `4c52854` (bench 86212), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colors swapped unless noted.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| 1.0.0 | 40 | 8 | 16 | 16 | 16.0 |
+| Morstilia 6.0.0 | 20 | 20 | 0 | 0 | 20.0 |
+| MaiEngine | 20 | 20 | 0 | 0 | 20.0 |
+| Stockfish 19, `UCI_Elo` 2400 | 20 | 13 | 5 | 2 | 14.0 |
+| Stockfish 19, `UCI_Elo` 2600 | 20 | 10 | 5 | 5 | 12.5 |
+| Stockfish 19, `UCI_Elo` 2800 | 20 | 4 | 12 | 4 | 6.0 |
+| Stockfish 19, `UCI_Elo` 2400, Chess960 book | 20 | 11 | 9 | 0 | 11.0 |
+
+All Morstilia games ended in checkmate. 17 of the MaiEngine games were MaiEngine time forfeits, as with 1.0.0. inphish lost no game on time and made no illegal move. On the same three ladder rungs 1.0.0 scored 26.5 of 60 and this candidate 32.5 of 60. Against 1.0.0 directly, the same search (counter moves and correction history, which Lazy SMP, MultiPV and strength limiting leave unchanged at one thread and default options) has now scored 43 of 100 over three samples, and a build with correction history switched off scored 18.5 of 40. Neither measure separates the candidate from 1.0.0: at these sample sizes it plays at about the same strength, and its additions are features rather than a measured strength gain.
+
 ## Optional SPRT
 
 The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
