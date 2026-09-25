@@ -68,6 +68,7 @@ struct Search<'a> {
     killers: [[Move; 2]; MAX_PLY],
     history: Box<[[[i32; 64]; 64]; 2]>,
     continuation: Box<[i32]>,
+    counters: Box<[Move]>,
     played: [Option<usize>; MAX_PLY],
     reductions: [[u8; 64]; 64],
     pv: [[Move; MAX_PLY]; MAX_PLY],
@@ -106,6 +107,7 @@ pub fn search_with_table(
         killers: [[Move::NULL; 2]; MAX_PLY],
         history: Box::new([[[0; 64]; 64]; 2]),
         continuation: vec![0; PIECE_SQUARES * PIECE_SQUARES].into_boxed_slice(),
+        counters: vec![Move::NULL; PIECE_SQUARES].into_boxed_slice(),
         played: [None; MAX_PLY],
         reductions: reduction_table(),
         pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
@@ -578,6 +580,9 @@ impl Search<'_> {
                         self.killers[ply][1] = self.killers[ply][0];
                         self.killers[ply][0] = mv;
                     }
+                    if let Some(previous) = self.previous_move(ply) {
+                        self.counters[previous] = mv;
+                    }
                     let bonus = (16 * depth * depth).min(1600);
                     self.update_history(side, mv, bonus, ply);
                     for &tried in &quiets_tried[..quiet_count] {
@@ -635,8 +640,12 @@ impl Search<'_> {
     /// quiet replies that refuted the same piece arriving on the same square tend to work
     /// again, which plain from-to history cannot see.
     fn continuation_index(&self, mv: Move, ply: usize) -> Option<usize> {
-        let previous = self.played[ply.checked_sub(1)?]?;
-        Some(previous * PIECE_SQUARES + self.piece_square(mv))
+        Some(self.previous_move(ply)? * PIECE_SQUARES + self.piece_square(mv))
+    }
+
+    /// Piece and destination of the move that led to `ply`, absent after a null move.
+    fn previous_move(&self, ply: usize) -> Option<usize> {
+        self.played[ply.checked_sub(1)?]
     }
 
     fn quiescence(&mut self, mut alpha: i32, beta: i32, ply: usize) -> i32 {
@@ -746,6 +755,12 @@ impl Search<'_> {
             }
             if mv == self.killers[ply][1] {
                 return 89_000;
+            }
+            if self
+                .previous_move(ply)
+                .is_some_and(|previous| self.counters[previous] == mv)
+            {
+                return 88_000;
             }
             let side = self.position.side_to_move().index();
             let continuation = self
