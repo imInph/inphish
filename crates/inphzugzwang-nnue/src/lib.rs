@@ -250,13 +250,47 @@ impl Network {
                 self.refresh(after, perspective, values);
                 continue;
             }
-            *values = parent.values[perspective.index()];
             let king = after.king(perspective);
-            for &(piece, square) in &delta.removed[..delta.removed_len] {
-                self.sub(values, feature(perspective, king, piece, square));
-            }
-            for &(piece, square) in &delta.added[..delta.added_len] {
-                self.add(values, feature(perspective, king, piece, square));
+            let row = |&(piece, square): &(Piece, Square)| {
+                let feature = feature(perspective, king, piece, square);
+                &self.feature_weights[feature * HALF..(feature + 1) * HALF]
+            };
+            let parent = &parent.values[perspective.index()];
+            let removed = &delta.removed[..delta.removed_len];
+            let added = &delta.added[..delta.added_len];
+            // One pass over the accumulator for the common shapes: a quiet move removes
+            // and adds one feature, a capture removes two and adds one.
+            match (removed, added) {
+                ([gone], [new]) => {
+                    let (gone, new) = (row(gone), row(new));
+                    for index in 0..HALF {
+                        values[index] = parent[index]
+                            .wrapping_sub(gone[index])
+                            .wrapping_add(new[index]);
+                    }
+                }
+                ([first, second], [new]) => {
+                    let (first, second, new) = (row(first), row(second), row(new));
+                    for index in 0..HALF {
+                        values[index] = parent[index]
+                            .wrapping_sub(first[index])
+                            .wrapping_sub(second[index])
+                            .wrapping_add(new[index]);
+                    }
+                }
+                _ => {
+                    *values = *parent;
+                    for gone in removed {
+                        for (value, &weight) in values.iter_mut().zip(row(gone)) {
+                            *value = value.wrapping_sub(weight);
+                        }
+                    }
+                    for new in added {
+                        for (value, &weight) in values.iter_mut().zip(row(new)) {
+                            *value = value.wrapping_add(weight);
+                        }
+                    }
+                }
             }
         }
     }
@@ -305,14 +339,110 @@ impl Network {
 fn affine_relu(input: &[u8], weights: &[i8], bias: &[i32; HIDDEN]) -> [u8; HIDDEN] {
     std::array::from_fn(|row| {
         let weights = &weights[row * input.len()..(row + 1) * input.len()];
-        let sum = bias[row]
-            + input
-                .iter()
-                .zip(weights)
-                .map(|(&input, &weight)| i32::from(input) * i32::from(weight))
-                .sum::<i32>();
+        let sum = bias[row] + dot(input, weights);
         (sum >> WEIGHT_SCALE_BITS).clamp(0, 127) as u8
     })
+}
+
+/// Dot product of clipped activations (0 to 127) with signed weights. Lengths are
+/// multiples of 32, which every layer of this network has.
+fn dot(input: &[u8], weights: &[i8]) -> i32 {
+    debug_assert!(input.len() == weights.len() && input.len() % 32 == 0);
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            // SAFETY: the dot-product extension was just detected and the lengths match.
+            return unsafe { simd::dot_neon(input, weights) };
+        }
+        dot_scalar(input, weights)
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 was just detected and the lengths match.
+            return unsafe { simd::dot_avx2(input, weights) };
+        }
+        dot_scalar(input, weights)
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        dot_scalar(input, weights)
+    }
+}
+
+fn dot_scalar(input: &[u8], weights: &[i8]) -> i32 {
+    input
+        .iter()
+        .zip(weights)
+        .map(|(&input, &weight)| i32::from(input) * i32::from(weight))
+        .sum()
+}
+
+mod simd {
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "dotprod")]
+    pub unsafe fn dot_neon(input: &[u8], weights: &[i8]) -> i32 {
+        use std::arch::aarch64::*;
+        let mut sum = vdupq_n_s32(0);
+        for (input, weights) in input.chunks_exact(16).zip(weights.chunks_exact(16)) {
+            // Activations never exceed 127, so they are also valid signed bytes.
+            let input = vreinterpretq_s8_u8(vld1q_u8(input.as_ptr()));
+            sum = vdotq_s32(sum, input, vld1q_s8(weights.as_ptr()));
+        }
+        vaddvq_s32(sum)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn dot_avx2(input: &[u8], weights: &[i8]) -> i32 {
+        use std::arch::x86_64::*;
+        let ones = _mm256_set1_epi16(1);
+        let mut sum = _mm256_setzero_si256();
+        for (input, weights) in input.chunks_exact(32).zip(weights.chunks_exact(32)) {
+            let input = _mm256_loadu_si256(input.as_ptr().cast());
+            let weights = _mm256_loadu_si256(weights.as_ptr().cast());
+            // Pair sums stay within 2 * 127 * 128, so the saturating multiply-add is exact.
+            let pairs = _mm256_maddubs_epi16(input, weights);
+            sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pairs, ones));
+        }
+        let halves = _mm_add_epi32(
+            _mm256_castsi256_si128(sum),
+            _mm256_extracti128_si256(sum, 1),
+        );
+        let pairs = _mm_add_epi32(halves, _mm_shuffle_epi32(halves, 0b01_00_11_10));
+        let total = _mm_add_epi32(pairs, _mm_shuffle_epi32(pairs, 0b10_11_00_01));
+        _mm_cvtsi128_si32(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_dot_matches_scalar() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for length in [32, 512] {
+            for _ in 0..200 {
+                let input: Vec<u8> = (0..length).map(|_| (next() % 128) as u8).collect();
+                let weights: Vec<i8> = (0..length).map(|_| next() as i8).collect();
+                assert_eq!(dot(&input, &weights), dot_scalar(&input, &weights));
+            }
+            let input = vec![127_u8; length];
+            for extreme in [i8::MIN, i8::MAX] {
+                assert_eq!(
+                    dot(&input, &vec![extreme; length]),
+                    dot_scalar(&input, &vec![extreme; length])
+                );
+            }
+        }
+    }
 }
 
 /// HalfKP feature index: the perspective's king square and the piece's square, both
