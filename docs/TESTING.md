@@ -87,19 +87,7 @@ Longer matches and formal SPRTs are optional when a specific strength question w
 
 ## Win, draw and loss estimates
 
-`UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((132 - cp) / 152))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ~/inphish-evidence` fitted the two constants by maximum likelihood to 28,830 evaluations from about 300 inphish self-play games at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 296 wins, 408 draws and 296 losses per thousand. It describes fast self-play, so against other engines or at longer time controls it is only a rough guide.
-
-## Search changes after 1.0.0
-
-Each change played the frozen 1.0.0 binary through `tools/match.sh` at 1+0.01, Hash 16 MiB, two concurrent games, on the balanced book with colors swapped. These samples only screen for clear regressions.
-
-Mate distance pruning does not change the bench and was not matched separately. The counter-move table (bench 85451) scored 9.5 of 20 (7 wins, 8 losses, 5 draws). Pawn-structure correction history on top of it (bench 86212) scored 8 of 20 (6 wins, 10 losses, 4 draws) on the first ten openings and 19 of 40 (14 wins, 16 losses, 10 draws) on the first twenty. Both are standard techniques, neither result is distinguishable from an even score, and both were kept.
-
-Two changes were rejected. A lazily scored, selection-picked move list gave no speed gain at bench depth 8 (about 2.24 against 2.31 million nodes per second over three alternating runs) and searched more nodes. Singular extensions from depth 7, with a margin of two centipawns per ply and multi-cut, scored 15.5 of 40 (7 wins, 16 losses, 17 draws) against 1.0.0, below the 19 of 40 without them.
-
-Lazy SMP (`a47abbd`) with two threads against the same build with one thread, 20 games at 1+0.01 with one game at a time: 8 wins, 5 losses, 7 draws (11.5 of 20), with no time losses.
-
-`UCI_Elo` was calibrated against Stockfish 19 at the same `UCI_Elo`, 20 games at 1+0.01 on the balanced book. A first curve (1,000 nodes doubling every 128 Elo, weakness from 138) scored 1 of 20 at 1600 and 14.5 of 20 at 2200. A second (doubling every 240 Elo, weakness from 107) scored 3 and 6. The adopted curve (2,000 nodes doubling every 240 Elo, weakness from 91) scored 7 of 20 at 1600 (7 wins, 13 losses) and 13 of 20 at 2200 (12 wins, 6 losses, 2 draws). The setting is therefore approximate, within very roughly 150 Elo of Stockfish's scale at this time control.
+`UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((340 - cp) / 236))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ~/inphish-evidence nnue-selfplay` fitted the two constants by maximum likelihood to 4,962 evaluations from 40 games of the network build (`4d6d3cc`) against itself at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 191 wins, 617 draws and 191 losses per thousand. Forty games is a small basis and it describes fast self-play, so the figures are a rough guide. The hand-written evaluation of 2.0 had its own fit, 132 and 152 from about 300 games.
 
 ## Stockfish ladder
 

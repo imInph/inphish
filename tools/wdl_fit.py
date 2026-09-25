@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # Fits the win/draw/loss model behind UCI_ShowWDL to inphish self-play PGNs from fastchess.
-# Usage: tools/wdl_fit.py EVIDENCE_DIR
+# Usage: tools/wdl_fit.py EVIDENCE_DIR [FILE_NAME_PATTERN]
+# The pattern picks the self-play PGNs; by default those of the hand-written evaluation.
 import glob, math, os, re, sys
-files = [f for f in glob.glob(os.path.join(sys.argv[1], '*.pgn'))
-         if re.search(r'vs-v0\.1\.0|aspiration|conthist|improving|newterms|qtt|tuned', f)]
+pattern = sys.argv[2] if len(sys.argv) > 2 else r'vs-v0\.1\.0|aspiration|conthist|improving|newterms|qtt|tuned'
+files = [f for f in glob.glob(os.path.join(sys.argv[1], '*.pgn')) if re.search(pattern, f)]
 samples = []
 for path in files:
     text = open(path).read()
