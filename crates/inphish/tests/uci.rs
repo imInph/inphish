@@ -297,3 +297,38 @@ fn uci_threads() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_limit_strength() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name UCI_LimitStrength"),
+        "option name UCI_LimitStrength type check default false"
+    );
+    assert_eq!(
+        engine.until("option name UCI_Elo"),
+        "option name UCI_Elo type spin default 2600 min 1320 max 2600"
+    );
+    engine.until("uciok");
+    engine.send("setoption name UCI_LimitStrength value true");
+    engine.send("setoption name UCI_Elo value 1");
+    engine.send("position startpos moves e2e4");
+    engine.send("go wtime 10000 btime 10000");
+    let mut deepest_line = 0;
+    loop {
+        let line = engine.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        if line.starts_with("bestmove ") {
+            assert_ne!(line, "bestmove 0000");
+            break;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let at = fields.iter().position(|&word| word == "multipv").unwrap();
+        deepest_line = deepest_line.max(fields[at + 1].parse::<usize>().unwrap());
+        let nodes = fields.iter().position(|&word| word == "nodes").unwrap();
+        assert!(fields[nodes + 1].parse::<u64>().unwrap() <= 2_100, "{line}");
+    }
+    assert_eq!(deepest_line, 1);
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}
