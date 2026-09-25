@@ -237,27 +237,31 @@ impl Engine {
         out: &mut impl Write,
     ) -> io::Result<()> {
         if limits.immediate {
-            let legal = self.position.legal_moves();
-            let best = legal
-                .iter()
-                .find(|mv| !limits.searchmoves_only || limits.searchmoves.contains(mv));
-            let label = best.map_or_else(
+            // A nearly spent clock still affords a thousand nodes, about a millisecond,
+            // which is far safer than playing the first legal move.
+            let quick = Limits {
+                nodes: Some(1000),
+                searchmoves: limits.searchmoves.clone(),
+                searchmoves_only: limits.searchmoves_only,
+                tablebases: self.tablebases.clone(),
+                started: limits.started,
+                ..Limits::default()
+            };
+            let control = Control {
+                stop: Arc::new(AtomicBool::new(false)),
+                ponderhit: Arc::new(AtomicBool::new(false)),
+            };
+            let result =
+                search_with_table(self.position.clone(), quick, &control, &self.hash, |_| {});
+            write_line(
+                out,
+                &format_info(&self.position, self.chess960, self.show_wdl, &result.info),
+            )?;
+            let best = result.best.map_or_else(
                 || "0000".to_owned(),
                 |mv| self.position.format_move(mv, self.chess960),
             );
-            let mated = best.is_none() && self.position.checkers().0 != 0;
-            let mut score = if mated { "mate 0" } else { "cp 0" }.to_owned();
-            if self.show_wdl {
-                let (win, draw, loss) = if mated { (0, 0, 1000) } else { wdl(0) };
-                score.push_str(&format!(" wdl {win} {draw} {loss}"));
-            }
-            let suffix = if best.is_some() {
-                format!(" {label}")
-            } else {
-                String::new()
-            };
-            write_line(out, &format!("info depth 0 seldepth 0 multipv 1 score {score} nodes 0 nps 0 hashfull 0 tbhits 0 time 0 pv{suffix}"))?;
-            write_line(out, &format!("bestmove {label}"))?;
+            write_line(out, &format!("bestmove {best}"))?;
             return Ok(());
         }
         self.next_id += 1;
