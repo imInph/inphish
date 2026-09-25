@@ -156,6 +156,14 @@ Revision `e2e9f0b` (bench 79837), one thread, Hash 16 MiB, 1+0.01, two concurren
 
 15 of the MaiEngine games were MaiEngine time forfeits. inphish lost no game on time and made no illegal move. Earlier builds on the way scored 14 of 20 (plain arithmetic, `c975ff3`) and 34 of 40 (vector dot products, `4d6d3cc`) against 2.0.0, and the latter scored 22 of 40 against itself. The even score against the Stockfish ladder moved from between 2600 and 2800 for 1.0 and 2.0 to between 2800 and 3000.
 
+## Tablebases
+
+`tests/syzygy/reference.txt` lists 4,000 random legal positions with at most five pieces, 426 of them with an en passant capture available, and the WDL and DTZ values that a local Stockfish 13 build probes for them with the 3-5 piece tables from tablebase.lichess.ovh. `tools/syzygy_reference.py` produced it through one added UCI command, `tbprobe`, printing `probe_wdl` and `probe_dtz` with their states, and used inphish to reject illegal positions. Stockfish 13 fails 26 of the probes although the tables are present; Stockfish 19's search agrees with inphish on the four of them checked. With `SYZYGY_PATH` set, the ignored test matches every one of the other 3,974 exactly and checks that probing leaves the position unchanged. A UCI test covers the option and, when `SYZYGY_PATH` is set, a tablebase root score and in-search hits.
+
+## 3.1 candidate checks
+
+Revision `4fa2d64` (bench 79837) with `SyzygyPath` set to the 3-5 piece tables, one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colors swapped: 21.5 of 40 against 3.0.0 (13 wins, 10 losses, 17 draws) and 20 of 20 against Morstilia 6.0.0, all checkmates. Its parent `685736a` scored 19.5 of 40 against 3.0.0, 18 of 20 against Morstilia and 20 of 20 against MaiEngine (12 MaiEngine time forfeits). One of the two Morstilia losses was a tablebase win, KQ against KR, thrown away because with about 50 ms left the engine played the first legal move without searching; `4fa2d64` replaced that with a 1,000-node search. inphish lost no game on time. Few games at this control reach five pieces, so the tables are not expected to change the score measurably.
+
 ## Optional SPRT
 
 The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
