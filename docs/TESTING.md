@@ -97,6 +97,8 @@ Mate distance pruning does not change the bench and was not matched separately. 
 
 Two changes were rejected. A lazily scored, selection-picked move list gave no speed gain at bench depth 8 (about 2.24 against 2.31 million nodes per second over three alternating runs) and searched more nodes. Singular extensions from depth 7, with a margin of two centipawns per ply and multi-cut, scored 15.5 of 40 (7 wins, 16 losses, 17 draws) against 1.0.0, below the 19 of 40 without them.
 
+Lazy SMP (`a47abbd`) with two threads against the same build with one thread, 20 games at 1+0.01 with one game at a time: 8 wins, 5 losses, 7 draws (11.5 of 20), with no time losses.
+
 ## Stockfish ladder
 
 Stockfish 19 (the official `sf_19` macOS build) with `UCI_LimitStrength` on and a given `UCI_Elo` serves as a graded opponent, passed through `MATCH_OPPONENT_OPTIONS="option.UCI_LimitStrength=true option.UCI_Elo=N option.Hash=16"`. Stockfish calibrates `UCI_Elo` at much longer time controls, so at 1+0.01 the numbers are labels for rungs, not ratings, and 20 games per rung give only a rough position.
