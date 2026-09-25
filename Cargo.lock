@@ -8,6 +8,7 @@ version = "2.0.0"
 dependencies = [
  "inphzugzwang-core",
  "inphzugzwang-eval",
+ "inphzugzwang-nnue",
  "inphzugzwang-search",
 ]
 
@@ -35,6 +36,7 @@ version = "0.1.0"
 dependencies = [
  "inphzugzwang-core",
  "inphzugzwang-eval",
+ "inphzugzwang-nnue",
 ]
 
 [[package]]

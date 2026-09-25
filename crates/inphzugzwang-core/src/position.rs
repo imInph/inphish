@@ -319,6 +319,10 @@ impl Position {
         king_square(&self.state, color)
     }
 
+    pub fn halfmove_clock(&self) -> u16 {
+        self.state.halfmove
+    }
+
     fn is_attacked(
         &self,
         target: Square,

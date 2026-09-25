@@ -2,8 +2,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use inphzugzwang_core::{Move, MoveList, PieceType, Position};
+use inphzugzwang_core::{Color, Move, MoveList, PieceType, Position};
 use inphzugzwang_eval::{evaluate, VALUES};
+use inphzugzwang_nnue::{network, Accumulator};
 
 mod tt;
 
@@ -84,6 +85,7 @@ struct Search<'a> {
     reductions: [[u8; 64]; 64],
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
+    accumulators: Box<[Accumulator]>,
 }
 
 pub fn search(
@@ -366,6 +368,8 @@ impl<'a> Search<'a> {
         shared_nodes: &'a AtomicU64,
     ) -> Self {
         let started = limits.started.unwrap_or_else(Instant::now);
+        let mut accumulators = vec![Accumulator::default(); MAX_PLY + 1].into_boxed_slice();
+        accumulators[0] = network().fresh(&position);
         Search {
             position,
             timed_started: if limits.ponder { None } else { Some(started) },
@@ -390,7 +394,51 @@ impl<'a> Search<'a> {
             reductions: reduction_table(),
             pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
             pv_len: [0; MAX_PLY],
+            accumulators,
         }
+    }
+
+    /// Makes `mv` from `ply`, deriving the next ply's accumulator from this one.
+    fn make(&mut self, mv: Move, ply: usize) {
+        let delta = inphzugzwang_nnue::delta(&self.position, mv);
+        self.position.make(mv);
+        let (parents, children) = self.accumulators.split_at_mut(ply + 1);
+        network().apply(&parents[ply], &mut children[0], &delta, &self.position);
+    }
+
+    fn make_null(&mut self, ply: usize) {
+        self.position.make_null();
+        self.accumulators[ply + 1] = self.accumulators[ply].clone();
+    }
+
+    /// Static evaluation in centipawns for the side to move. The network output is scaled
+    /// the way Stockfish 13 scales it, by remaining material and the fifty-move counter,
+    /// then converted at its 208 internal units per pawn. Positions with less than two
+    /// rooks' worth of pieces and at most one pawn, where Stockfish 13 also leaves the
+    /// network aside, use the hand-written evaluation.
+    fn static_evaluation(&self, ply: usize) -> i32 {
+        const PIECE_VALUES: [(PieceType, i32); 4] = [
+            (PieceType::Knight, 781),
+            (PieceType::Bishop, 825),
+            (PieceType::Rook, 1276),
+            (PieceType::Queen, 2538),
+        ];
+        let position = &self.position;
+        let mut pieces = 0;
+        let mut pawns = 0;
+        for color in [Color::White, Color::Black] {
+            pawns += position.pieces(color, PieceType::Pawn).count() as i32;
+            for (kind, value) in PIECE_VALUES {
+                pieces += position.pieces(color, kind).count() as i32 * value;
+            }
+        }
+        if pieces < 2 * 1276 && pawns < 2 {
+            return evaluate(position);
+        }
+        let rule50 = i32::from(position.halfmove_clock().min(100));
+        let raw = network().evaluate(&self.accumulators[ply], position.side_to_move());
+        let scaled = raw * (641 + (pieces + 2 * 126 * pawns) / 32 - 4 * rule50) / 1024 + 28;
+        (scaled * 100 / 208 * (100 - rule50) / 100).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
     fn root_moves(&self) -> Vec<Move> {
@@ -495,7 +543,7 @@ impl<'a> Search<'a> {
             }
             let before = self.nodes;
             self.played[0] = Some(self.piece_square(mv));
-            self.position.make(mv);
+            self.make(mv, 0);
             let child_depth = depth as i32 - 1;
             let mut score = if index == 0 {
                 -self.negamax(child_depth, -beta, -alpha, 1, true)
@@ -600,7 +648,7 @@ impl<'a> Search<'a> {
             return 0;
         }
         if ply >= MAX_PLY - 1 {
-            return evaluate(&self.position);
+            return self.static_evaluation(ply);
         }
         let in_check = self.position.checkers().0 != 0;
         if in_check {
@@ -649,7 +697,7 @@ impl<'a> Search<'a> {
         let raw_eval = if in_check {
             0
         } else {
-            hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
+            hit.map_or_else(|| self.static_evaluation(ply), |record| record.eval)
         };
         let static_eval = if in_check {
             0
@@ -673,7 +721,7 @@ impl<'a> Search<'a> {
                 // passing would be an illegal advantage the null move cannot represent.
                 let reduction = 3 + depth / 4 + ((static_eval - beta) / 200).min(3);
                 self.played[ply] = None;
-                self.position.make_null();
+                self.make_null(ply);
                 let score = -self.negamax(depth - 1 - reduction, -beta, -beta + 1, ply + 1, false);
                 self.position.unmake();
                 if self.aborted {
@@ -704,7 +752,7 @@ impl<'a> Search<'a> {
             }
             let history = self.history[side][mv.from().index()][mv.to().index()];
             self.played[ply] = Some(self.piece_square(mv));
-            self.position.make(mv);
+            self.make(mv, ply);
             let new_depth = depth - 1;
             let mut score;
             if index == 0 {
@@ -886,7 +934,7 @@ impl<'a> Search<'a> {
         let raw_eval = if in_check {
             0
         } else {
-            hit.map_or_else(|| evaluate(&self.position), |record| record.eval)
+            hit.map_or_else(|| self.static_evaluation(ply), |record| record.eval)
         };
         let stand_pat = if in_check {
             -INF
@@ -909,7 +957,7 @@ impl<'a> Search<'a> {
             if !in_check && !self.position.see_ge(mv, 0) {
                 continue;
             }
-            self.position.make(mv);
+            self.make(mv, ply);
             let score = -self.quiescence(-beta, -alpha, ply + 1);
             self.position.unmake();
             if self.aborted {

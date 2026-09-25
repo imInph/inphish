@@ -47,6 +47,8 @@ struct Engine {
 }
 
 pub fn run() -> io::Result<()> {
+    // Parse the bundled network before reading any command, so no search clock pays for it.
+    inphzugzwang_nnue::network();
     let (tx, rx) = mpsc::channel();
     let input_tx = tx.clone();
     let _input = thread::spawn(move || {

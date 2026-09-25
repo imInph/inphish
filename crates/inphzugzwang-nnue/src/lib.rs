@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use inphzugzwang_core::{Color, Piece, PieceType, Position, Square};
+use inphzugzwang_core::{Color, Move, MoveFlag, Piece, PieceType, Position, Square};
 
 /// Width of one perspective's accumulator.
 pub const HALF: usize = 256;
@@ -41,6 +41,76 @@ impl Default for Accumulator {
             values: [[0; HALF]; 2],
         }
     }
+}
+
+/// Features a move removes and adds, read from the position before the move. A king
+/// move changes every feature of its own perspective, which is then refreshed instead.
+pub struct Delta {
+    removed: [(Piece, Square); 2],
+    removed_len: usize,
+    added: [(Piece, Square); 2],
+    added_len: usize,
+    king_moved: Option<Color>,
+}
+
+impl Delta {
+    fn remove(&mut self, piece: Piece, square: Square) {
+        if piece.kind != PieceType::King {
+            self.removed[self.removed_len] = (piece, square);
+            self.removed_len += 1;
+        }
+    }
+
+    fn add(&mut self, piece: Piece, square: Square) {
+        if piece.kind != PieceType::King {
+            self.added[self.added_len] = (piece, square);
+            self.added_len += 1;
+        }
+    }
+}
+
+pub fn delta(position: &Position, mv: Move) -> Delta {
+    let side = position.side_to_move();
+    let piece = position
+        .piece_at(mv.from())
+        .expect("legal move has a mover");
+    let placeholder = (piece, mv.from());
+    let mut delta = Delta {
+        removed: [placeholder; 2],
+        removed_len: 0,
+        added: [placeholder; 2],
+        added_len: 0,
+        king_moved: (piece.kind == PieceType::King).then_some(side),
+    };
+    if mv.is_castle() {
+        let kingside = mv.flag() == 2;
+        let rook = Piece {
+            color: side,
+            kind: PieceType::Rook,
+        };
+        delta.remove(rook, mv.to());
+        delta.add(
+            rook,
+            Square::new(if kingside { 5 } else { 3 }, side.back_rank()),
+        );
+        return delta;
+    }
+    delta.remove(piece, mv.from());
+    if mv.flag() == MoveFlag::EnPassant as u8 {
+        let victim = Piece {
+            color: side.other(),
+            kind: PieceType::Pawn,
+        };
+        delta.remove(victim, Square::new(mv.to().file(), mv.from().rank()));
+    } else if let Some(victim) = position.piece_at(mv.to()) {
+        delta.remove(victim, mv.to());
+    }
+    let placed = Piece {
+        color: side,
+        kind: mv.promotion().unwrap_or(piece.kind),
+    };
+    delta.add(placed, mv.to());
+    delta
 }
 
 /// The bundled network, parsed on first use.
@@ -165,6 +235,44 @@ impl Network {
         }
     }
 
+    /// Derives the accumulator after a move from the one before it; `after` is the
+    /// position once the move is made.
+    pub fn apply(
+        &self,
+        parent: &Accumulator,
+        child: &mut Accumulator,
+        delta: &Delta,
+        after: &Position,
+    ) {
+        for perspective in [Color::White, Color::Black] {
+            let values = &mut child.values[perspective.index()];
+            if delta.king_moved == Some(perspective) {
+                self.refresh(after, perspective, values);
+                continue;
+            }
+            *values = parent.values[perspective.index()];
+            let king = after.king(perspective);
+            for &(piece, square) in &delta.removed[..delta.removed_len] {
+                self.sub(values, feature(perspective, king, piece, square));
+            }
+            for &(piece, square) in &delta.added[..delta.added_len] {
+                self.add(values, feature(perspective, king, piece, square));
+            }
+        }
+    }
+
+    pub fn fresh(&self, position: &Position) -> Accumulator {
+        let mut accumulator = Accumulator::default();
+        for perspective in [Color::White, Color::Black] {
+            self.refresh(
+                position,
+                perspective,
+                &mut accumulator.values[perspective.index()],
+            );
+        }
+        accumulator
+    }
+
     /// Network output for the side to move, in Stockfish 13's internal units.
     pub fn evaluate(&self, accumulator: &Accumulator, side: Color) -> i32 {
         let mut input = [0_u8; 2 * HALF];
@@ -189,15 +297,7 @@ impl Network {
 
     /// Evaluates a position from scratch.
     pub fn evaluate_position(&self, position: &Position) -> i32 {
-        let mut accumulator = Accumulator::default();
-        for perspective in [Color::White, Color::Black] {
-            self.refresh(
-                position,
-                perspective,
-                &mut accumulator.values[perspective.index()],
-            );
-        }
-        self.evaluate(&accumulator, position.side_to_move())
+        self.evaluate(&self.fresh(position), position.side_to_move())
     }
 }
 

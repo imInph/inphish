@@ -1,5 +1,5 @@
 use inphzugzwang_core::Position;
-use inphzugzwang_nnue::{network, Network};
+use inphzugzwang_nnue::{delta, network, Accumulator, Network};
 
 const REFERENCE: &str = include_str!("../../../tests/nnue/reference.txt");
 
@@ -30,4 +30,47 @@ fn rejects_damaged_files() {
     let mut version = bytes.to_vec();
     version[0] ^= 1;
     assert!(Network::parse(&version).is_err());
+}
+
+/// Walks every line to a fixed depth, deriving each accumulator from its parent's, and
+/// checks it against one computed from scratch.
+fn walk(position: &mut Position, parent: &Accumulator, depth: u8, checked: &mut usize) {
+    let network = network();
+    for mv in position.legal_moves().iter() {
+        let delta = delta(position, mv);
+        position.make(mv);
+        let mut child = Accumulator::default();
+        network.apply(parent, &mut child, &delta, position);
+        assert!(
+            child.values == network.fresh(position).values,
+            "{} after {}",
+            position.fen(),
+            position.format_move(mv, true)
+        );
+        *checked += 1;
+        if depth > 1 {
+            walk(position, &child, depth - 1, checked);
+        }
+        position.unmake();
+    }
+}
+
+#[test]
+fn incremental_updates_match_fresh() {
+    let suites = [
+        include_str!("../../../tests/perft/standard.txt"),
+        include_str!("../../../tests/perft/chess960.txt"),
+    ];
+    let mut checked = 0;
+    for fen in suites
+        .iter()
+        .flat_map(|suite| suite.lines())
+        .step_by(2)
+        .filter_map(|line| line.splitn(4, '|').nth(3))
+    {
+        let mut position = Position::from_fen(fen).expect(fen);
+        let root = network().fresh(&position);
+        walk(&mut position, &root, 3, &mut checked);
+    }
+    assert!(checked > 100_000, "{checked}");
 }
