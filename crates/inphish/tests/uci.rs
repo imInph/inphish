@@ -136,3 +136,44 @@ fn uci_edge_cases() {
     assert!(engine.until("bestmove ").starts_with("bestmove "));
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_chess960_castling() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name UCI_Chess960"),
+        "option name UCI_Chess960 type check default false"
+    );
+    engine.until("uciok");
+
+    let open = "rnbqk2r/pppppppp/8/8/8/8/PPPPPPPP/RNBQK2R w";
+    engine.send(&format!("position fen {open} KQkq - 0 1"));
+    engine.send("go depth 1 searchmoves e1g1");
+    assert_eq!(engine.until("bestmove "), "bestmove e1g1");
+
+    engine.send("setoption name UCI_Chess960 value true");
+    for rights in ["KQkq", "HAha"] {
+        engine.send(&format!("position fen {open} {rights} - 0 1"));
+        engine.send("go depth 1 searchmoves e1h1");
+        assert_eq!(engine.until("bestmove "), "bestmove e1h1");
+        engine.send("go depth 1 searchmoves e1g1");
+        assert_eq!(engine.until("bestmove "), "bestmove 0000");
+    }
+
+    // The king starts beside its rook, so the castle is only expressible as king takes rook.
+    let adjacent = "rk5r/pppppppp/8/8/8/8/PPPPPPPP/RK5R w AHah - 0 1";
+    engine.send(&format!("position fen {adjacent} moves b1a1 b8h8"));
+    engine.send("go depth 1 searchmoves c1b1");
+    assert_eq!(engine.until("bestmove "), "bestmove c1b1");
+    engine.send(&format!("position fen {adjacent}"));
+    engine.send("go depth 1 searchmoves b1a1");
+    assert_eq!(engine.until("bestmove "), "bestmove b1a1");
+
+    engine.send("setoption name UCI_Chess960 value false");
+    engine.send(&format!("position fen {open} KQkq - 0 1"));
+    engine.send("go depth 1 searchmoves e1g1");
+    assert_eq!(engine.until("bestmove "), "bestmove e1g1");
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}

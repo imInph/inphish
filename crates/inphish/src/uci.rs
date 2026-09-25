@@ -138,6 +138,7 @@ impl Engine {
                 )?;
                 write_line(out, "option name Hash type spin default 16 min 1 max 1024")?;
                 write_line(out, "option name Clear Hash type button")?;
+                write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "uciok")?;
             }
             "isready" => write_line(out, "readyok")?,
@@ -288,6 +289,10 @@ impl Engine {
             }
         } else if name == "clear hash" {
             self.clear_hash();
+        } else if name == "uci_chess960" {
+            if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
+                self.chess960 = enabled;
+            }
         }
     }
 

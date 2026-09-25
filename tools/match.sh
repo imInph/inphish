@@ -16,6 +16,7 @@ rounds=${MATCH_ROUNDS:-10}
 concurrency=${MATCH_CONCURRENCY:-2}
 evidence=${MATCH_EVIDENCE:-$HOME/inphish-evidence}
 read -r -a opponent_options <<< "${MATCH_OPPONENT_OPTIONS:-}"
+variant=${MATCH_VARIANT:-standard}
 # The development machine is a fanless laptop: a batch is capped at 40 games, 1+0.01,
 # two concurrent games and 20 minutes of wall clock unless the owner approved more.
 wall_clock_seconds=1200
@@ -26,6 +27,10 @@ openings=${MATCH_OPENINGS:-$repo_root/tests/openings/balanced.epd}
 if [[ $time_control != 1+0.01 || $rounds -gt 20 || $concurrency -gt 2 ]] \
     && [[ ${MATCH_OWNER_APPROVED:-} != yes ]]; then
     printf 'beyond the default budget; set MATCH_OWNER_APPROVED=yes only with owner approval\n' >&2
+    exit 2
+fi
+if [[ $variant != standard && $variant != fischerandom ]]; then
+    printf 'unknown variant: %s\n' "$variant" >&2
     exit 2
 fi
 if ! command -v "$fastchess" >/dev/null 2>&1; then
@@ -64,7 +69,7 @@ status=0
         "$fastchess" \
         -engine "cmd=$engine" "name=inphish-$short" option.Hash=16 \
         "${opponent[@]}" \
-        -each "tc=$time_control" \
+        -each "tc=$time_control" -variant "$variant" \
         -openings "file=$openings" format=epd order=sequential \
         -rounds "$rounds" -games 2 -repeat -concurrency "$concurrency" \
         -recover -report penta=true \
