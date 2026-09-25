@@ -89,6 +89,18 @@ Longer matches and formal SPRTs are optional when a specific strength question w
 
 `UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((340 - cp) / 236))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ~/inphish-evidence nnue-selfplay` fitted the two constants by maximum likelihood to 4,962 evaluations from 40 games of the network build (`4d6d3cc`) against itself at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 191 wins, 617 draws and 191 losses per thousand. Forty games is a small basis and it describes fast self-play, so the figures are a rough guide. The hand-written evaluation of 2.0 had its own fit, 132 and 152 from about 300 games.
 
+## Search changes after 1.0.0
+
+Each change played the frozen 1.0.0 binary through `tools/match.sh` at 1+0.01, Hash 16 MiB, two concurrent games, on the balanced book with colors swapped. These samples only screen for clear regressions.
+
+Mate distance pruning does not change the bench and was not matched separately. The counter-move table (bench 85451) scored 9.5 of 20 (7 wins, 8 losses, 5 draws). Pawn-structure correction history on top of it (bench 86212) scored 8 of 20 (6 wins, 10 losses, 4 draws) on the first ten openings and 19 of 40 (14 wins, 16 losses, 10 draws) on the first twenty. Both are standard techniques, neither result is distinguishable from an even score, and both were kept.
+
+Two changes were rejected. A lazily scored, selection-picked move list gave no speed gain at bench depth 8 (about 2.24 against 2.31 million nodes per second over three alternating runs) and searched more nodes. Singular extensions from depth 7, with a margin of two centipawns per ply and multi-cut, scored 15.5 of 40 (7 wins, 16 losses, 17 draws) against 1.0.0, below the 19 of 40 without them.
+
+Lazy SMP (`a47abbd`) with two threads against the same build with one thread, 20 games at 1+0.01 with one game at a time: 8 wins, 5 losses, 7 draws (11.5 of 20), with no time losses.
+
+`UCI_Elo` was calibrated against Stockfish 19 at the same `UCI_Elo`, 20 games at 1+0.01 on the balanced book. A first curve (1,000 nodes doubling every 128 Elo, weakness from 138) scored 1 of 20 at 1600 and 14.5 of 20 at 2200. A second (doubling every 240 Elo, weakness from 107) scored 3 and 6. The adopted curve (2,000 nodes doubling every 240 Elo, weakness from 91) scored 7 of 20 at 1600 (7 wins, 13 losses) and 13 of 20 at 2200 (12 wins, 6 losses, 2 draws). The setting is therefore approximate, within very roughly 150 Elo of Stockfish's scale at this time control. With the network in 3.0 the same curve was far too strong (17 of 20 at 1600, 14.5 at 2200), so the budget was lowered to 600 nodes at the lowest setting, doubling every 240 Elo, which scored 12.5 of 20 at 1600 (12 wins, 7 losses, 1 draw) and 13 of 20 at 2200 (13 wins, 7 losses).
+
 ## Stockfish ladder
 
 Stockfish 19 (the official `sf_19` macOS build) with `UCI_LimitStrength` on and a given `UCI_Elo` serves as a graded opponent, passed through `MATCH_OPPONENT_OPTIONS="option.UCI_LimitStrength=true option.UCI_Elo=N option.Hash=16"`. Stockfish calibrates `UCI_Elo` at much longer time controls, so at 1+0.01 the numbers are labels for rungs, not ratings, and 20 games per rung give only a rough position.
@@ -123,6 +135,26 @@ Revision `4c52854` (bench 86212), one thread, Hash 16 MiB, 1+0.01, two concurren
 | Stockfish 19, `UCI_Elo` 2400, Chess960 book | 20 | 11 | 9 | 0 | 11.0 |
 
 All Morstilia games ended in checkmate. 17 of the MaiEngine games were MaiEngine time forfeits, as with 1.0.0. inphish lost no game on time and made no illegal move. On the same three ladder rungs 1.0.0 scored 26.5 of 60 and this candidate 32.5 of 60. Against 1.0.0 directly, the same search (counter moves and correction history, which Lazy SMP, MultiPV and strength limiting leave unchanged at one thread and default options) has now scored 43 of 100 over three samples, and a build with correction history switched off scored 18.5 of 40. Neither measure separates the candidate from 1.0.0: at these sample sizes it plays at about the same strength, and its additions are features rather than a measured strength gain.
+
+## Network evaluation
+
+`tests/nnue/reference.txt` lists 2,169 positions with the raw network value, after division by 16 and for the side to move, that Stockfish 13 computes for them with `nn-62ef826d1a6d`. `tools/nnue_reference.py` produced it from a local Stockfish 13 build (tag `sf_13`) extended by one UCI command, `rawnnue`, printing `Eval::NNUE::evaluate`. The positions are the perft suites, ten Chess960 starts, the balanced book, and every seventh position of 170 random playouts. inphish's inference matches every value exactly. A second test derives each accumulator from its parent along every line to depth 3 from the standard and Chess960 perft positions, over 100,000 moves, and compares it with one computed from scratch. A third compares the vector dot products with the plain loop on random and extreme inputs. The Linux and Windows CI jobs run these tests on x86-64 with AVX2.
+
+## 3.0 candidate checks
+
+Revision `e2e9f0b` (bench 79837), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colors swapped unless noted.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| 2.0.0 | 40 | 33 | 4 | 3 | 34.5 |
+| Morstilia 6.0.0 | 20 | 18 | 0 | 2 | 19.0 |
+| MaiEngine | 20 | 20 | 0 | 0 | 20.0 |
+| Stockfish 19, `UCI_Elo` 2600 | 20 | 15 | 3 | 2 | 16.0 |
+| Stockfish 19, `UCI_Elo` 2800 | 20 | 9 | 7 | 4 | 11.0 |
+| Stockfish 19, `UCI_Elo` 3000 | 20 | 2 | 11 | 7 | 5.5 |
+| Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 7 | 9 | 4 | 9.0 |
+
+15 of the MaiEngine games were MaiEngine time forfeits. inphish lost no game on time and made no illegal move. Earlier builds on the way scored 14 of 20 (plain arithmetic, `c975ff3`) and 34 of 40 (vector dot products, `4d6d3cc`) against 2.0.0, and the latter scored 22 of 40 against itself. The even score against the Stockfish ladder moved from between 2600 and 2800 for 1.0 and 2.0 to between 2800 and 3000.
 
 ## Optional SPRT
 
