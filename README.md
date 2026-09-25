@@ -41,7 +41,24 @@ Correctness tests and their reference data are described in [docs/TESTING.md](do
 
 ## Strength
 
-No rating-list Elo has been measured. Version 0.1.0 played two 20-game matches at 10+0.1 with Hash 16 MiB, one thread, and ten openings played with colors swapped: 19 wins, 0 losses, 1 draw against Morstilia 6.0.0, and 18 wins, 1 loss, 1 draw against MaiEngine. These are small informal samples, not a rating. Version 1.0.0 was checked at 1+0.01 on the committed balanced openings with colors swapped: 30 of 40 against 0.1.0 (26 wins, 6 losses, 8 draws) and 19 of 20 against Morstilia 6.0.0 (18 wins, 2 draws). It also won all 20 games against MaiEngine, but 16 of those were MaiEngine losing on time, so that result says little about playing strength. Version 2.0.0 adds features rather than measured strength: against 1.0.0 its search has scored 43 of 100 over three small samples, within noise of an even score. Against Stockfish 19 limited with `UCI_Elo`, 20 games per setting at 1+0.01, it scored 14 of 20 at 2400, 12.5 at 2600 and 6 at 2800, where 1.0.0 scored 11.5, 12 and 3. Version 3.0.0, with the network, scored 34.5 of 40 against 2.0.0 (33 wins, 4 losses, 3 draws), 19 of 20 against Morstilia 6.0.0, and 16, 11 and 5.5 of 20 against Stockfish at 2600, 2800 and 3000. Version 3.1.0, with the 3-5 piece tables, scored 21.5 of 40 against 3.0.0 at 1+0.01, where few games reach five pieces. Those `UCI_Elo` numbers are Stockfish's labels calibrated at far longer time controls, not ratings. See [docs/TESTING.md](docs/TESTING.md).
+No rating-list Elo has been measured. The table places each release on Stockfish 19's `UCI_Elo` scale: Stockfish was limited to a series of `UCI_Elo` settings, inphish played 20 games against each with the openings' colors swapped, and one Elo per version was fitted to all its results by maximum likelihood (95% ranges). Stockfish calibrates `UCI_Elo` at much longer time controls and its limiter does not scale with time the way a normal engine does, so compare versions within one column only, and treat the numbers as labels on a shared scale rather than ratings. Match scores are wins / losses / draws over 20 games.
+
+| Version | Elo, 1+0.01 | Elo, 10+0.1 | Morstilia 6.0.0 | MaiEngine |
+|---|---|---|---|---|
+| 0.1.0-preview.2 | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) |
+| 0.1.0 | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) |
+| 1.0.0 | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
+| 2.0.0 | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+| 3.0.0 | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
+| 3.1.0 | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+
+1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
+2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
+3. At 10+0.1. At 1+0.01 it scored 19 / 0 / 1 against Morstilia and 20 / 0 / 0 against MaiEngine, 18 of them MaiEngine time forfeits.
+4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15 and 12 games for 1.0.0, 2.0.0, 3.0.0 and 3.1.0), so they say little about playing strength. inphish lost no game on time.
+5. Not placed on the ladder separately; it scored 21.5 and 19.5 of 40 against 3.0.0, where few games reach five pieces.
+
+The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, and 3.0.0, which added the NNUE network. Between 0.1.0 and 2.0.0 the differences are within the ranges. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, and 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0. See [docs/TESTING.md](docs/TESTING.md) for every match.
 
 ## Limitations
 

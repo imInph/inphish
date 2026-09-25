@@ -164,6 +164,18 @@ Revision `e2e9f0b` (bench 79837), one thread, Hash 16 MiB, 1+0.01, two concurren
 
 Revision `4fa2d64` (bench 79837) with `SyzygyPath` set to the 3-5 piece tables, one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colors swapped: 21.5 of 40 against 3.0.0 (13 wins, 10 losses, 17 draws) and 20 of 20 against Morstilia 6.0.0, all checkmates. Its parent `685736a` scored 19.5 of 40 against 3.0.0, 18 of 20 against Morstilia and 20 of 20 against MaiEngine (12 MaiEngine time forfeits). One of the two Morstilia losses was a tablebase win, KQ against KR, thrown away because with about 50 ms left the engine played the first legal move without searching; `4fa2d64` replaced that with a 1,000-node search. inphish lost no game on time. Few games at this control reach five pieces, so the tables are not expected to change the score measurably.
 
+## Ladder for the early releases and version comparison
+
+After 3.1.0 the early releases were placed on the same Stockfish 19 ladder, 20 games per `UCI_Elo` setting on the balanced book with colors swapped.
+
+0.1.0 (`f52f88a`, bench 95766) at 1+0.01: 15.5 of 20 at 2200 (15 wins, 4 losses, 1 draw), 12.5 at 2400 (11, 6, 3), 9.5 at 2600 (8, 9, 3), 2 at 2800 (1, 17, 2). At 10+0.1, with the owner's approval for the slower control: 19 of 20 at 2300 (19, 1, 0) and 14.5 at 2600 (14, 5, 1).
+
+0.1.0-preview.2 (`8c5362e`, bench 499138) at 1+0.01 scored 1 of 80 at 1320, 1500, 1800 and 2000; 47% of its moves were instant moves at depth 0, the clock bug fixed in 0.1.0. At 10+0.1, where 7% of its moves were instant: 13 of 20 at 1500 (13, 7, 0) and 7.5 at 1900 (7, 12, 1).
+
+One Elo per version was fitted by maximum likelihood to all its rungs with the logistic Elo model, and the ranges are 95% intervals from the Fisher information. At 1+0.01, with the ladder results recorded above for the later versions: 0.1.0 2494 ± 90 (80 games), 1.0.0 2521 ± 84 (120), 2.0.0 2635 ± 97 (60), 3.0.0 2835 ± 97 (60). At 10+0.1: preview.2 1712 ± 126, 0.1.0 2777 ± 152 (40 games each).
+
+3.1.0 (`f74ffe8`) with the 3-5 piece tables against the frozen 1.0.0 and 2.0.0 builds, 40 games each at 1+0.01: 36 of 40 against 1.0.0 (35 wins, 3 losses, 2 draws) and 38.5 of 40 against 2.0.0 (38, 1, 1), all normal terminations.
+
 ## Optional SPRT
 
 The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
