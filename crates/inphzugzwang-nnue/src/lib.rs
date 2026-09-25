@@ -347,7 +347,7 @@ fn affine_relu(input: &[u8], weights: &[i8], bias: &[i32; HIDDEN]) -> [u8; HIDDE
 /// Dot product of clipped activations (0 to 127) with signed weights. Lengths are
 /// multiples of 32, which every layer of this network has.
 fn dot(input: &[u8], weights: &[i8]) -> i32 {
-    debug_assert!(input.len() == weights.len() && input.len() % 32 == 0);
+    debug_assert!(input.len() == weights.len() && input.len().is_multiple_of(32));
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("dotprod") {
@@ -384,7 +384,8 @@ mod simd {
     pub unsafe fn dot_neon(input: &[u8], weights: &[i8]) -> i32 {
         use std::arch::aarch64::*;
         let mut sum = vdupq_n_s32(0);
-        for (input, weights) in input.chunks_exact(16).zip(weights.chunks_exact(16)) {
+        let (input, weights) = (input.as_chunks::<16>().0, weights.as_chunks::<16>().0);
+        for (input, weights) in input.iter().zip(weights) {
             // Activations never exceed 127, so they are also valid signed bytes.
             let input = vreinterpretq_s8_u8(vld1q_u8(input.as_ptr()));
             sum = vdotq_s32(sum, input, vld1q_s8(weights.as_ptr()));
@@ -398,7 +399,8 @@ mod simd {
         use std::arch::x86_64::*;
         let ones = _mm256_set1_epi16(1);
         let mut sum = _mm256_setzero_si256();
-        for (input, weights) in input.chunks_exact(32).zip(weights.chunks_exact(32)) {
+        let (input, weights) = (input.as_chunks::<32>().0, weights.as_chunks::<32>().0);
+        for (input, weights) in input.iter().zip(weights) {
             let input = _mm256_loadu_si256(input.as_ptr().cast());
             let weights = _mm256_loadu_si256(weights.as_ptr().cast());
             // Pair sums stay within 2 * 127 * 128, so the saturating multiply-add is exact.
@@ -413,6 +415,16 @@ mod simd {
         let total = _mm_add_epi32(pairs, _mm_shuffle_epi32(pairs, 0b10_11_00_01));
         _mm_cvtsi128_si32(total)
     }
+}
+
+/// HalfKP feature index: the perspective's king square and the piece's square, both
+/// rotated by 180 degrees for Black, and the piece kind with its colour relative to the
+/// perspective. Kings themselves are not features.
+pub fn feature(perspective: Color, king: Square, piece: Piece, square: Square) -> usize {
+    let flip = if perspective == Color::White { 0 } else { 63 };
+    let enemy = usize::from(piece.color != perspective);
+    let piece_offset = 1 + (piece.kind.index() * 2 + enemy) * 64;
+    (square.index() ^ flip) + piece_offset + PIECE_SQUARES * (king.index() ^ flip)
 }
 
 #[cfg(test)]
@@ -443,14 +455,4 @@ mod tests {
             }
         }
     }
-}
-
-/// HalfKP feature index: the perspective's king square and the piece's square, both
-/// rotated by 180 degrees for Black, and the piece kind with its colour relative to the
-/// perspective. Kings themselves are not features.
-pub fn feature(perspective: Color, king: Square, piece: Piece, square: Square) -> usize {
-    let flip = if perspective == Color::White { 0 } else { 63 };
-    let enemy = usize::from(piece.color != perspective);
-    let piece_offset = 1 + (piece.kind.index() * 2 + enemy) * 64;
-    (square.index() ^ flip) + piece_offset + PIECE_SQUARES * (king.index() ^ flip)
 }
