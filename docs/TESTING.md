@@ -89,6 +89,14 @@ Longer matches and formal SPRTs are optional when a specific strength question w
 
 `UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((132 - cp) / 152))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ~/inphish-evidence` fitted the two constants by maximum likelihood to 28,830 evaluations from about 300 inphish self-play games at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 296 wins, 408 draws and 296 losses per thousand. It describes fast self-play, so against other engines or at longer time controls it is only a rough guide.
 
+## Search changes after 1.0.0
+
+Each change played the frozen 1.0.0 binary through `tools/match.sh` at 1+0.01, Hash 16 MiB, two concurrent games, on the balanced book with colors swapped. These samples only screen for clear regressions.
+
+Mate distance pruning does not change the bench and was not matched separately. The counter-move table (bench 85451) scored 9.5 of 20 (7 wins, 8 losses, 5 draws). Pawn-structure correction history on top of it (bench 86212) scored 8 of 20 (6 wins, 10 losses, 4 draws) on the first ten openings and 19 of 40 (14 wins, 16 losses, 10 draws) on the first twenty. Both are standard techniques, neither result is distinguishable from an even score, and both were kept.
+
+Two changes were rejected. A lazily scored, selection-picked move list gave no speed gain at bench depth 8 (about 2.24 against 2.31 million nodes per second over three alternating runs) and searched more nodes. Singular extensions from depth 7, with a margin of two centipawns per ply and multi-cut, scored 15.5 of 40 (7 wins, 16 losses, 17 draws) against 1.0.0, below the 19 of 40 without them.
+
 ## Stockfish ladder
 
 Stockfish 19 (the official `sf_19` macOS build) with `UCI_LimitStrength` on and a given `UCI_Elo` serves as a graded opponent, passed through `MATCH_OPPONENT_OPTIONS="option.UCI_LimitStrength=true option.UCI_Elo=N option.Hash=16"`. Stockfish calibrates `UCI_Elo` at much longer time controls, so at 1+0.01 the numbers are labels for rungs, not ratings, and 20 games per rung give only a rough position.
