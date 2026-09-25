@@ -1,5 +1,14 @@
 # inphzugzwang changelog
 
+## 2.0.0 - 2026-09-25
+
+- Chess960 through the `UCI_Chess960` option, with X-FEN and Shredder-FEN castling rights and king-takes-rook castling notation.
+- `MultiPV`, `UCI_ShowWDL` (a logistic win/draw/loss model fitted to self-play by `tools/wdl_fit.py`), `Threads` (Lazy SMP), and `UCI_LimitStrength` with `UCI_Elo` from 1320 to 2600, calibrated approximately against Stockfish 19.
+- Search: mate distance pruning, a counter-move table, and pawn-structure correction history. Singular extensions and a lazily picked move list were tried and dropped.
+- `tools/match.sh` takes `MATCH_VARIANT` and `MATCH_ENGINE_OPTIONS`; `tests/openings/chess960.epd` holds ten Chess960 starting layouts.
+- Checks at 1+0.01, Hash 16 MiB, one thread: 16/40 against 1.0.0 (43/100 over three samples of the same search, within noise); 20/20 against Morstilia 6.0.0, all checkmates; 20/20 against MaiEngine, 17 of them MaiEngine time forfeits; Stockfish 19 at `UCI_Elo` 2400, 2600, 2800: 14, 12.5 and 6 of 20 (1.0.0: 11.5, 12, 3); Chess960 against Stockfish at 2400: 11/20. Small samples, not Elo measurements. Playing strength is about that of 1.0.0.
+- Depth-4 bench signature: 86212 nodes.
+
 ## 1.0.0 - 2026-09-24
 
 - Evaluation terms for pieces attacked by lesser pieces, undefended attacked pieces, knight outposts, rooks on the seventh rank, and passed-pawn king distance, all read from one indexed weight table.
