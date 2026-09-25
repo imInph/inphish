@@ -23,6 +23,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "inphzugzwang-nnue"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-core",
+]
+
+[[package]]
 name = "inphzugzwang-search"
 version = "0.1.0"
 dependencies = [

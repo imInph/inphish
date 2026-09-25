@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/inphzugzwang-core", "crates/inphzugzwang-eval", "crates/inphzugzwang-search", "crates/inphish", "tools/tune"]
+members = ["crates/inphzugzwang-core", "crates/inphzugzwang-eval", "crates/inphzugzwang-nnue", "crates/inphzugzwang-search", "crates/inphish", "tools/tune"]
 resolver = "2"
 
 [profile.release]
