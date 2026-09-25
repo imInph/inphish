@@ -786,6 +786,24 @@ fn is_quiet(mv: Move) -> bool {
     mv.flag() & 4 == 0 && mv.promotion().is_none()
 }
 
+/// Win, draw and loss chances in permille for the side to move. The logistic model
+/// `win = 1 / (1 + exp((a - score) / b))`, with loss mirrored, was fitted by maximum
+/// likelihood to inphish self-play evaluations at 1+0.01, so it is only an estimate.
+pub fn wdl(score: i32) -> (u16, u16, u16) {
+    const A: f64 = 132.0;
+    const B: f64 = 152.0;
+    if score >= MATE_BOUND {
+        return (1000, 0, 0);
+    }
+    if score <= -MATE_BOUND {
+        return (0, 0, 1000);
+    }
+    let score = f64::from(score);
+    let win = (1000.0 / (1.0 + ((A - score) / B).exp())).round() as u16;
+    let loss = (1000.0 / (1.0 + ((A + score) / B).exp())).round() as u16;
+    (win, 1000 - win - loss, loss)
+}
+
 pub fn uci_score(score: i32) -> String {
     if score.abs() >= MATE - MAX_PLY as i32 {
         let plies = MATE - score.abs();
@@ -820,6 +838,19 @@ mod tests {
             |_| {},
         );
         assert_eq!(uci_score(result.info.score), "mate 1");
+    }
+
+    #[test]
+    fn wdl_is_complete_and_monotonic() {
+        let mut previous = (0, 0, 1000);
+        for score in (-MATE..=MATE).step_by(7) {
+            let (win, draw, loss) = wdl(score);
+            assert_eq!(win + draw + loss, 1000, "{score}");
+            assert!(win >= previous.0 && loss <= previous.2, "{score}");
+            previous = (win, draw, loss);
+        }
+        assert_eq!(wdl(0).0, wdl(0).2);
+        assert_eq!(wdl(MATE - 3), (1000, 0, 0));
     }
 
     #[test]

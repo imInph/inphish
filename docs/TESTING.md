@@ -85,6 +85,10 @@ Revision `7c66dd8` (1.0.0, bench 86020) played through `tools/match.sh` at 1+0.0
 
 Longer matches and formal SPRTs are optional when a specific strength question warrants them and sufficient compute is available. An undecided SPRT remains inconclusive even if its point estimate is positive.
 
+## Win, draw and loss estimates
+
+`UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((132 - cp) / 152))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ~/inphish-evidence` fitted the two constants by maximum likelihood to 28,830 evaluations from about 300 inphish self-play games at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 296 wins, 408 draws and 296 losses per thousand. It describes fast self-play, so against other engines or at longer time controls it is only a rough guide.
+
 ## Stockfish ladder
 
 Stockfish 19 (the official `sf_19` macOS build) with `UCI_LimitStrength` on and a given `UCI_Elo` serves as a graded opponent, passed through `MATCH_OPPONENT_OPTIONS="option.UCI_LimitStrength=true option.UCI_Elo=N option.Hash=16"`. Stockfish calibrates `UCI_Elo` at much longer time controls, so at 1+0.01 the numbers are labels for rungs, not ratings, and 20 games per rung give only a rough position.

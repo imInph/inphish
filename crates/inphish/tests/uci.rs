@@ -230,3 +230,29 @@ fn uci_multipv_lines() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_show_wdl() {
+    let mut engine = Engine::spawn();
+    engine.send("go depth 2");
+    assert!(!engine.until("info depth 2").contains(" wdl "));
+    engine.until("bestmove ");
+    engine.send("setoption name UCI_ShowWDL value true");
+    engine.send("position fen k7/8/1QK5/8/8/8/8/8 w - - 0 1");
+    engine.send("go depth 3");
+    let info = engine.until("info depth 1");
+    assert!(info.contains("score mate 1 wdl 1000 0 0 "), "{info}");
+    engine.until("bestmove ");
+    engine.send("position startpos");
+    engine.send("go depth 2");
+    let info = engine.until("info depth 2");
+    let fields: Vec<&str> = info.split_whitespace().collect();
+    let at = fields.iter().position(|&word| word == "wdl").unwrap();
+    let sum: u32 = fields[at + 1..at + 4]
+        .iter()
+        .map(|value| value.parse::<u32>().unwrap())
+        .sum();
+    assert_eq!(sum, 1000, "{info}");
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}
