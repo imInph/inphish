@@ -256,3 +256,44 @@ fn uci_show_wdl() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_threads() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name Threads"),
+        "option name Threads type spin default 1 min 1 max 256"
+    );
+    engine.until("uciok");
+    engine.send("setoption name Threads value 4");
+    engine.send("position startpos moves e2e4 c7c5");
+    engine.send("go depth 6");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+    engine.send("go nodes 20000");
+    let mut nodes = 0;
+    loop {
+        let line = engine.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        if line.starts_with("bestmove ") {
+            assert_ne!(line, "bestmove 0000");
+            break;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if let Some(at) = fields.iter().position(|&word| word == "nodes") {
+            nodes = fields[at + 1].parse::<u64>().unwrap();
+        }
+    }
+    // Helpers report nodes in batches of 1,024, so the total can pass the limit by
+    // roughly one batch per helper.
+    assert!((20_000..20_000 + 4 * 1024 + 64).contains(&nodes), "{nodes}");
+    engine.send("go infinite");
+    engine.send("isready");
+    assert_eq!(engine.until("readyok"), "readyok");
+    engine.send("stop");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+    engine.send("position fen 7k/6Q1/5K2/8/8/8/8/8 b - - 0 1");
+    engine.send("go depth 4");
+    assert_eq!(engine.until("bestmove "), "bestmove 0000");
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}

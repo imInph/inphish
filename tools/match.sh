@@ -16,6 +16,7 @@ rounds=${MATCH_ROUNDS:-10}
 concurrency=${MATCH_CONCURRENCY:-2}
 evidence=${MATCH_EVIDENCE:-$HOME/inphish-evidence}
 read -r -a opponent_options <<< "${MATCH_OPPONENT_OPTIONS:-}"
+read -r -a engine_options <<< "${MATCH_ENGINE_OPTIONS:-}"
 variant=${MATCH_VARIANT:-standard}
 # The development machine is a fanless laptop: a batch is capped at 40 games, 1+0.01,
 # two concurrent games and 20 minutes of wall clock unless the owner approved more.
@@ -68,6 +69,7 @@ status=0
     perl -e 'alarm shift; exec @ARGV' "$wall_clock_seconds" \
         "$fastchess" \
         -engine "cmd=$engine" "name=inphish-$short" option.Hash=16 \
+            ${engine_options[@]+"${engine_options[@]}"} \
         "${opponent[@]}" \
         -each "tc=$time_control" -variant "$variant" \
         -openings "file=$openings" format=epd order=sequential \

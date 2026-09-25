@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,8 @@ pub struct Limits {
     pub searchmoves_only: bool,
     /// Number of principal variations to report; 0 and 1 both mean one.
     pub multipv: usize,
+    /// Search threads including the main one; 0 and 1 both mean one.
+    pub threads: usize,
     pub immediate: bool,
     pub started: Option<Instant>,
 }
@@ -66,6 +68,9 @@ struct Search<'a> {
     started: Instant,
     timed_started: Option<Instant>,
     nodes: u64,
+    /// Nodes of the helper threads: helpers add to it in batches, the main thread reads it.
+    shared_nodes: &'a AtomicU64,
+    helper: bool,
     seldepth: usize,
     aborted: bool,
     killers: [[Move; 2]; MAX_PLY],
@@ -89,43 +94,59 @@ pub fn search(
     search_with_table(position, limits, control, &tt, on_info)
 }
 
+/// Lazy SMP: helper threads run their own iterative deepening on the same position and
+/// share only the transposition table, which they fill with results the main thread
+/// reuses. The main thread alone manages time, reports and chooses the move.
 pub fn search_with_table(
     position: Position,
     limits: Limits,
     control: &Control,
     tt: &TranspositionTable,
-    mut on_info: impl FnMut(Info),
+    on_info: impl FnMut(Info),
 ) -> Result {
     tt.next_generation();
-    let started = limits.started.unwrap_or_else(Instant::now);
-    let mut worker = Search {
-        position,
-        timed_started: if limits.ponder { None } else { Some(started) },
-        limits,
-        control,
-        tt,
-        started,
-        nodes: 0,
-        seldepth: 0,
-        aborted: false,
-        killers: [[Move::NULL; 2]; MAX_PLY],
-        history: Box::new([[[0; 64]; 64]; 2]),
-        continuation: vec![0; PIECE_SQUARES * PIECE_SQUARES].into_boxed_slice(),
-        counters: vec![Move::NULL; PIECE_SQUARES].into_boxed_slice(),
-        correction: vec![[0; CORRECTION_ENTRIES]; 2]
-            .into_boxed_slice()
-            .try_into()
-            .expect("two sides"),
-        played: [None; MAX_PLY],
-        reductions: reduction_table(),
-        pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
-        pv_len: [0; MAX_PLY],
+    let shared_nodes = AtomicU64::new(0);
+    let helper_control = Control {
+        stop: Arc::new(AtomicBool::new(false)),
+        ponderhit: Arc::new(AtomicBool::new(false)),
     };
-    let root = worker.position.legal_moves();
-    let candidates: Vec<_> = root
-        .iter()
-        .filter(|mv| !worker.limits.searchmoves_only || worker.limits.searchmoves.contains(mv))
-        .collect();
+    let helpers = limits.threads.max(1) - 1;
+    std::thread::scope(|scope| {
+        for index in 0..helpers {
+            let position = position.clone();
+            let helper_limits = Limits {
+                searchmoves: limits.searchmoves.clone(),
+                searchmoves_only: limits.searchmoves_only,
+                ..Limits::default()
+            };
+            let (helper_control, shared_nodes) = (&helper_control, &shared_nodes);
+            std::thread::Builder::new()
+                .name("inphish-helper".to_owned())
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(scope, move || {
+                    let mut worker =
+                        Search::new(position, helper_limits, helper_control, tt, shared_nodes);
+                    worker.helper = true;
+                    worker.help(1 + (index % 2) as u8);
+                })
+                .expect("helper thread could not start");
+        }
+        let result = search_main(position, limits, control, tt, &shared_nodes, on_info);
+        helper_control.stop.store(true, Ordering::Relaxed);
+        result
+    })
+}
+
+fn search_main(
+    position: Position,
+    limits: Limits,
+    control: &Control,
+    tt: &TranspositionTable,
+    shared_nodes: &AtomicU64,
+    mut on_info: impl FnMut(Info),
+) -> Result {
+    let mut worker = Search::new(position, limits, control, tt, shared_nodes);
+    let candidates = worker.root_moves();
     let fallback = candidates.first().copied();
     let mut completed = Info {
         depth: 0,
@@ -209,7 +230,7 @@ pub fn search_with_table(
             depth,
             seldepth: worker.seldepth,
             score: best_score,
-            nodes: worker.nodes,
+            nodes: worker.total_nodes(),
             elapsed: worker.started.elapsed(),
             hashfull: worker.tt.hashfull(),
             pv: worker.pv[0][..worker.pv_len[0]].to_vec(),
@@ -257,7 +278,7 @@ pub fn search_with_table(
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    completed.nodes = worker.nodes;
+    completed.nodes = worker.total_nodes();
     completed.seldepth = worker.seldepth;
     completed.elapsed = worker.started.elapsed();
     completed.hashfull = worker.tt.hashfull();
@@ -275,7 +296,76 @@ pub fn search_with_table(
     }
 }
 
-impl Search<'_> {
+impl<'a> Search<'a> {
+    fn new(
+        position: Position,
+        limits: Limits,
+        control: &'a Control,
+        tt: &'a TranspositionTable,
+        shared_nodes: &'a AtomicU64,
+    ) -> Self {
+        let started = limits.started.unwrap_or_else(Instant::now);
+        Search {
+            position,
+            timed_started: if limits.ponder { None } else { Some(started) },
+            limits,
+            control,
+            tt,
+            started,
+            nodes: 0,
+            shared_nodes,
+            helper: false,
+            seldepth: 0,
+            aborted: false,
+            killers: [[Move::NULL; 2]; MAX_PLY],
+            history: Box::new([[[0; 64]; 64]; 2]),
+            continuation: vec![0; PIECE_SQUARES * PIECE_SQUARES].into_boxed_slice(),
+            counters: vec![Move::NULL; PIECE_SQUARES].into_boxed_slice(),
+            correction: vec![[0; CORRECTION_ENTRIES]; 2]
+                .into_boxed_slice()
+                .try_into()
+                .expect("two sides"),
+            played: [None; MAX_PLY],
+            reductions: reduction_table(),
+            pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
+            pv_len: [0; MAX_PLY],
+        }
+    }
+
+    fn root_moves(&self) -> Vec<Move> {
+        self.position
+            .legal_moves()
+            .iter()
+            .filter(|mv| !self.limits.searchmoves_only || self.limits.searchmoves.contains(mv))
+            .collect()
+    }
+
+    /// Helper iterative deepening, starting at `first_depth` so that helpers are spread
+    /// over different iterations, until the main thread stops it.
+    fn help(&mut self, first_depth: u8) {
+        let mut ordered = self.root_moves();
+        let mut best = None;
+        for depth in first_depth..MAX_PLY as u8 {
+            if ordered.is_empty() || self.should_stop() {
+                return;
+            }
+            ordered.sort_by_key(|&mv| -self.move_score(mv, best, 0));
+            let (_, iteration_best, _) = self.search_root(depth, &ordered, -INF, INF);
+            if self.aborted {
+                return;
+            }
+            best = iteration_best.or(best);
+        }
+    }
+
+    fn total_nodes(&self) -> u64 {
+        if self.helper {
+            self.nodes
+        } else {
+            self.nodes + self.shared_nodes.load(Ordering::Relaxed)
+        }
+    }
+
     /// Searches the lines after the first at `depth`, each over the root moves not already
     /// heading an earlier line. A line whose search is cut short keeps its previous depth.
     fn search_lines(
@@ -310,7 +400,7 @@ impl Search<'_> {
                 depth,
                 seldepth: self.seldepth,
                 score,
-                nodes: self.nodes,
+                nodes: self.total_nodes(),
                 elapsed: self.started.elapsed(),
                 hashfull: self.tt.hashfull(),
                 pv: self.pv[0][..self.pv_len[0]].to_vec(),
@@ -387,7 +477,11 @@ impl Search<'_> {
             return true;
         }
         self.refresh_ponder();
-        if self.limits.nodes.is_some_and(|limit| self.nodes >= limit) {
+        if self
+            .limits
+            .nodes
+            .is_some_and(|limit| self.total_nodes() >= limit)
+        {
             self.aborted = true;
             return true;
         }
@@ -418,6 +512,9 @@ impl Search<'_> {
         self.nodes += 1;
         self.seldepth = self.seldepth.max(ply);
         if self.nodes & 31 == 0 || self.limits.nodes.is_some() {
+            if self.helper && self.nodes & 1023 == 0 {
+                self.shared_nodes.fetch_add(1024, Ordering::Relaxed);
+            }
             self.should_stop()
         } else {
             self.aborted

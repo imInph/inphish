@@ -37,6 +37,7 @@ struct Engine {
     hash_mb: u32,
     hash: Arc<TranspositionTable>,
     multipv: usize,
+    threads: usize,
     show_wdl: bool,
     chess960: bool,
     debug: bool,
@@ -68,6 +69,7 @@ pub fn run() -> io::Result<()> {
         hash_mb: 16,
         hash: Arc::new(TranspositionTable::new(16).expect("default hash allocation failed")),
         multipv: 1,
+        threads: 1,
         show_wdl: false,
         chess960: false,
         debug: false,
@@ -142,6 +144,7 @@ impl Engine {
                 )?;
                 write_line(out, "option name Hash type spin default 16 min 1 max 1024")?;
                 write_line(out, "option name Clear Hash type button")?;
+                write_line(out, "option name Threads type spin default 1 min 1 max 256")?;
                 write_line(out, "option name MultiPV type spin default 1 min 1 max 256")?;
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
@@ -164,6 +167,7 @@ impl Engine {
                     parse_go(&words[1..], &self.position, self.overhead, self.chess960);
                 limits.started = Some(started);
                 limits.multipv = self.multipv;
+                limits.threads = self.threads;
                 if self.active.is_some() {
                     self.stop();
                     self.pending = Some(limits);
@@ -297,6 +301,10 @@ impl Engine {
             }
         } else if name == "clear hash" {
             self.clear_hash();
+        } else if name == "threads" {
+            if let Ok(threads) = value.parse::<usize>() {
+                self.threads = threads.clamp(1, 256);
+            }
         } else if name == "multipv" {
             if let Ok(lines) = value.parse::<usize>() {
                 self.multipv = lines.clamp(1, 256);
