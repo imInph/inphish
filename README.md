@@ -1,47 +1,60 @@
-# inphish
+![inphish](docs/images/banner.jpg)
 
-inphish is a UCI chess engine written in Rust. It is intended to run inside a chess GUI or tournament manager.
+<p align="center">
+  <a href="https://github.com/imInph/inphish/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/imInph/inphish?color=17898A"></a>
+  <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-0B2230"></a>
+</p>
 
-Run the executable with no arguments to speak UCI over standard input and output. Add that executable as a UCI engine in a chess GUI; inphish has no graphical interface of its own.
+inphish is a UCI chess engine written in Rust. It has no graphical interface of its own: run it inside a chess GUI or tournament manager, where it speaks UCI over standard input and output.
 
-## Releases
+## Quick start
 
-Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases), extract it, and select `inphish` (`inphish.exe` on Windows) as the UCI executable in your chess GUI. Release archives are built for Linux x86-64, Windows x86-64, macOS Apple Silicon, and macOS Intel. No book, network file, or runtime download is required. Pick `macos-aarch64` for Apple Silicon Macs and `macos-x86_64` for Intel Macs. On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` before a GUI can start it.
+1. Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases): Linux x86-64, Windows x86-64, `macos-aarch64` for Apple Silicon, or `macos-x86_64` for Intel Macs.
+2. Extract it and select `inphish` (`inphish.exe` on Windows) as a UCI engine in your GUI.
+3. Play, analyse or run matches. No book, network file or runtime download is needed.
 
-## Build
+On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` before a GUI can start it.
 
-Use stable Rust:
+## Features
 
-```sh
-cargo build --release
-```
+![Search, evaluation, endgames, parallel search, Chess960 and UCI features](docs/images/features.jpg)
 
-The executable is `target/release/inphish` (`inphish.exe` on Windows). Building for the local CPU can improve speed:
+- **Search:** iterative deepening, principal variation search, a transposition table, null-move and futility pruning, late move reductions, killer, history, counter-move and static-exchange move ordering, and quiescence search.
+- **Evaluation:** since 3.0.0, Stockfish 13's NNUE network `nn-62ef826d1a6d` (HalfKP 256x2-32-32, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 13's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. Bare endings with less than two rooks' worth of pieces and at most one pawn, where Stockfish 13 also set the network aside, use inphish's hand-written evaluation.
+- **Endgames:** Syzygy WDL and DTZ probing. The tables are not included; download them separately, for example the 3-5 piece set of about 1 GB.
+- **Chess960:** with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook. Standard chess is the default.
 
-```sh
-RUSTFLAGS="-C target-cpu=native" cargo build --release
-```
+### UCI options
 
-The engine uses iterative deepening, principal variation search, a transposition table, null-move and futility pruning, late move reductions, killer, history and static-exchange move ordering, and quiescence search. Since 3.0.0 the evaluation is Stockfish 13's NNUE network `nn-62ef826d1a6d` (HalfKP 256x2-32-32, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 13's output exactly. inphish's evaluation is therefore Stockfish's network, not one of its own. Bare endings with less than two rooks' worth of pieces and at most one pawn, where Stockfish 13 also set the network aside, use inphish's hand-written evaluation. UCI options are `Hash` (16 MiB by default), `Clear Hash`, `Threads` (1 by default), `Move Overhead` (20 ms by default), `MultiPV` (1 by default), `UCI_LimitStrength` with `UCI_Elo` (1320 to 2600, approximate), `UCI_ShowWDL`, `UCI_Chess960`, and `SyzygyPath`. `SyzygyPath` takes one or more directories of Syzygy endgame tables (separated by `:`, or `;` on Windows); the tables are not included and can be downloaded separately, for example the 3-5 piece set of about 1 GB. Standard chess is the default; with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook.
-
-## Diagnostic commands
-
-```sh
-target/release/inphish perft 5
-target/release/inphish divide 4
-target/release/inphish d
-target/release/inphish eval
-target/release/inphish bench
-target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
-```
-
-`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument.
-
-Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md). The engine architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The depth-4 bench signature is `79837` nodes. Some earlier search changes were measured by SPRT against preceding revisions; later changes are checked with short bounded matches recorded in the testing notes. Absolute playing strength remains unmeasured.
+| Option | Default | Notes |
+|---|---|---|
+| `Hash` | 16 | Transposition table size in MiB, 1 to 1024 |
+| `Clear Hash` | | Button |
+| `Threads` | 1 | Lazy SMP, 1 to 256 |
+| `Move Overhead` | 20 | Milliseconds reserved per move for GUI and network lag |
+| `MultiPV` | 1 | Number of principal variations, 1 to 256 |
+| `UCI_LimitStrength` | false | Enables `UCI_Elo` |
+| `UCI_Elo` | 2600 | 1320 to 2600, approximate |
+| `UCI_ShowWDL` | false | Adds win/draw/loss estimates to `info` output |
+| `UCI_Chess960` | false | Chess960 castling and FEN handling |
+| `SyzygyPath` | empty | One or more table directories, separated by `:` (`;` on Windows) |
 
 ## Strength
 
-No rating-list Elo has been measured. The table places each release on Stockfish 19's `UCI_Elo` scale: Stockfish was limited to a series of `UCI_Elo` settings, inphish played 20 games against each with the openings' colors swapped, and one Elo per version was fitted to all its results by maximum likelihood (95% ranges). Stockfish calibrates `UCI_Elo` at much longer time controls and its limiter does not scale with time the way a normal engine does, so compare versions within one column only, and treat the numbers as labels on a shared scale rather than ratings. Match scores are wins / losses / draws over 20 games.
+No rating-list Elo has been measured. Each release is placed on Stockfish 19's `UCI_Elo` scale: Stockfish was limited to a series of `UCI_Elo` settings, inphish played 20 games against each with the openings' colours swapped, and one Elo per version was fitted to all its results by maximum likelihood, with 95% ranges. Stockfish calibrates `UCI_Elo` at much longer time controls and its limiter does not scale with time the way a normal engine does, so treat the numbers as labels on a shared scale rather than ratings.
+
+![Elo per release on Stockfish 19's UCI_Elo scale at 1+0.01](docs/images/progress.jpg)
+
+The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, and 3.0.0, which added the NNUE network. Between 0.1.0 and 2.0.0 the differences are within the ranges. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, and 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0.
+
+![Match results against Stockfish 19, Morstilia V6 and MaiEngine](docs/images/results.jpg)
+
+At 1+0.01 MaiEngine loses many games on time, so its results say little about playing strength; inphish lost no game on time.
+
+<details>
+<summary>Every release, both time controls</summary>
+
+Compare versions within one column only. Match scores are wins / losses / draws over 20 games.
 
 | Version | Elo, 1+0.01 | Elo, 10+0.1 | [Morstilia V6](https://github.com/ALPDM447/MorstiliaChessEngine) | [MaiEngine](https://github.com/Justmaii/MaiEngine) |
 |---|---|---|---|---|
@@ -58,7 +71,40 @@ No rating-list Elo has been measured. The table places each release on Stockfish
 4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15 and 12 games for 1.0.0, 2.0.0, 3.0.0 and 3.1.0), so they say little about playing strength. inphish lost no game on time.
 5. Not placed on the ladder separately; it scored 21.5 and 19.5 of 40 against 3.0.0, where few games reach five pieces.
 
-The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, and 3.0.0, which added the NNUE network. Between 0.1.0 and 2.0.0 the differences are within the ranges. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, and 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0. See [docs/TESTING.md](docs/TESTING.md) for every match.
+</details>
+
+See [docs/TESTING.md](docs/TESTING.md) for every match.
+
+## Build
+
+Use stable Rust:
+
+```sh
+cargo build --release
+```
+
+The executable is `target/release/inphish` (`inphish.exe` on Windows). Building for the local CPU can improve speed:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+### Diagnostic commands
+
+```sh
+target/release/inphish perft 5
+target/release/inphish divide 4
+target/release/inphish d
+target/release/inphish eval
+target/release/inphish bench
+target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+```
+
+`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `79837` nodes.
+
+## Testing
+
+Correctness tests and their reference data are described in [docs/TESTING.md](docs/TESTING.md), and the engine architecture in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Some earlier search changes were measured by SPRT against preceding revisions; later changes are checked with short bounded matches recorded in the testing notes.
 
 ## Limitations
 
