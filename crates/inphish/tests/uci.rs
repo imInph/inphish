@@ -283,10 +283,10 @@ fn uci_threads() {
             nodes = fields[at + 1].parse::<u64>().unwrap();
         }
     }
-    // Helpers report nodes in batches of 1,024 and keep searching until the main thread
-    // stops them, so on a busy machine the total can pass the limit by several batches.
-    // The bound only catches a limit that is ignored outright.
-    assert!((20_000..40_000).contains(&nodes), "{nodes}");
+    // Every thread adds its nodes to a shared total in batches of 1,024 and stops once the
+    // total reaches the limit, so it can pass the limit by at most about a batch per thread,
+    // however the threads are scheduled.
+    assert!((20_000..20_000 + 5 * 1024).contains(&nodes), "{nodes}");
     engine.send("go infinite");
     engine.send("isready");
     assert_eq!(engine.until("readyok"), "readyok");

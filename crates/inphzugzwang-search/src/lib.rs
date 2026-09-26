@@ -76,9 +76,8 @@ struct Search<'a> {
     started: Instant,
     timed_started: Option<Instant>,
     nodes: u64,
-    /// Nodes of the helper threads: helpers add to it in batches, the main thread reads it.
+    /// Nodes of all threads, added in batches; node limits apply to this total.
     shared_nodes: &'a AtomicU64,
-    helper: bool,
     tbhits: u64,
     seldepth: usize,
     aborted: bool,
@@ -116,6 +115,10 @@ pub fn search_with_table(
 ) -> Result {
     tt.next_generation();
     let mut limits = limits;
+    if let Some(elo) = limits.strength {
+        let cap = strength_nodes(elo);
+        limits.nodes = Some(limits.nodes.map_or(cap, |nodes| nodes.min(cap)));
+    }
     // With the root in the tablebases, only the moves that keep the best result under the
     // fifty-move rule are searched, and the search no longer probes, as in Stockfish.
     let root_tb = limits
@@ -141,6 +144,7 @@ pub fn search_with_table(
                 searchmoves: limits.searchmoves.clone(),
                 searchmoves_only: limits.searchmoves_only,
                 tablebases: limits.tablebases.clone(),
+                nodes: limits.nodes,
                 ..Limits::default()
             };
             let (helper_control, shared_nodes) = (&helper_control, &shared_nodes);
@@ -150,7 +154,6 @@ pub fn search_with_table(
                 .spawn_scoped(scope, move || {
                     let mut worker =
                         Search::new(position, helper_limits, helper_control, tt, shared_nodes);
-                    worker.helper = true;
                     worker.help(1 + (index % 2) as u8);
                 })
                 .expect("helper thread could not start");
@@ -171,17 +174,13 @@ pub fn search_with_table(
 
 fn search_main(
     position: Position,
-    mut limits: Limits,
+    limits: Limits,
     control: &Control,
     tt: &TranspositionTable,
     shared_nodes: &AtomicU64,
     root_tb_score: Option<i32>,
     mut on_info: impl FnMut(Info),
 ) -> Result {
-    if let Some(elo) = limits.strength {
-        let cap = strength_nodes(elo);
-        limits.nodes = Some(limits.nodes.map_or(cap, |nodes| nodes.min(cap)));
-    }
     let seed = position.key()
         ^ std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -492,7 +491,6 @@ impl<'a> Search<'a> {
             started,
             nodes: 0,
             shared_nodes,
-            helper: false,
             tbhits: 0,
             seldepth: 0,
             aborted: false,
@@ -639,12 +637,10 @@ impl<'a> Search<'a> {
         }
     }
 
+    /// Nodes of all threads: every thread adds its count to the shared counter in batches
+    /// of 1,024, so this is exact for one thread and at most a batch per thread short.
     fn total_nodes(&self) -> u64 {
-        if self.helper {
-            self.nodes
-        } else {
-            self.nodes + self.shared_nodes.load(Ordering::Relaxed)
-        }
+        self.shared_nodes.load(Ordering::Relaxed) + (self.nodes & 1023)
     }
 
     /// Searches the lines after the first at `depth`, each over the root moves not already
@@ -796,7 +792,7 @@ impl<'a> Search<'a> {
         self.nodes += 1;
         self.seldepth = self.seldepth.max(ply);
         if self.nodes & 31 == 0 || self.limits.nodes.is_some() {
-            if self.helper && self.nodes & 1023 == 0 {
+            if self.nodes & 1023 == 0 {
                 self.shared_nodes.fetch_add(1024, Ordering::Relaxed);
             }
             self.should_stop()
