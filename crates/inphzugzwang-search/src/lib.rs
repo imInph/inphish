@@ -449,12 +449,14 @@ fn strength_nodes(elo: u16) -> u64 {
 
 pub const STRENGTH_MIN: u16 = 1320;
 pub const STRENGTH_MAX: u16 = 3000;
+/// Setting from which moves are no longer weakened and only the node budget limits play.
+const STRENGTH_UNWEAKENED: u16 = 2600;
 
 /// Chooses a line in the manner of Stockfish's skill level: each line's score gets a push
 /// that grows with its distance from the best line and with a random share of the spread
 /// of scores, both scaled by the weakness, and the line with the highest total is played.
 fn weakened_choice(lines: &[Info], elo: u16, seed: u64) -> usize {
-    let weakness = i32::from((STRENGTH_MAX - elo.clamp(STRENGTH_MIN, STRENGTH_MAX)) / 14).max(1);
+    let weakness = i32::from(STRENGTH_UNWEAKENED.saturating_sub(elo.max(STRENGTH_MIN)) / 14).max(1);
     let top = lines[0].score;
     let delta = (top - lines[lines.len() - 1].score).clamp(0, 100);
     let mut state = seed | 1;
