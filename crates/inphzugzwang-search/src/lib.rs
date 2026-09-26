@@ -874,22 +874,38 @@ impl<'a> Search<'a> {
         } else {
             self.corrected(raw_eval)
         };
+        // A stored search result bounds the true value more tightly than the static
+        // evaluation where its bound points the right way, so pruning uses it instead.
+        let eval = match hit {
+            Some(record)
+                if !in_check
+                    && record.score.abs() < MATE_BOUND
+                    && match record.bound {
+                        Bound::Exact => true,
+                        Bound::Lower => record.score > static_eval,
+                        Bound::Upper => record.score < static_eval,
+                    } =>
+            {
+                record.score
+            }
+            _ => static_eval,
+        };
         if !pv_node && !in_check && beta.abs() < MATE_BOUND {
             // Reverse futility: a quiet position this far above beta at low depth is not
             // expected to fall back below it within the remaining plies.
-            if depth <= 6 && static_eval - 80 * depth >= beta {
-                return static_eval;
+            if depth <= 6 && eval - 80 * depth >= beta {
+                return eval;
             }
             if allow_null
                 && depth >= 3
-                && static_eval >= beta
+                && eval >= beta
                 && self
                     .position
                     .has_non_pawn_material(self.position.side_to_move())
             {
                 // Pawn-only positions are excluded because zugzwang is common there and
                 // passing would be an illegal advantage the null move cannot represent.
-                let reduction = 3 + depth / 4 + ((static_eval - beta) / 200).min(3);
+                let reduction = 3 + depth / 4 + ((eval - beta) / 200).min(3);
                 self.played[ply] = None;
                 self.make_null(ply);
                 let score = -self.negamax(depth - 1 - reduction, -beta, -beta + 1, ply + 1, false);
@@ -902,6 +918,11 @@ impl<'a> Search<'a> {
                 }
             }
         }
+        // Internal iterative reduction: without a stored move this node was not searched
+        // before, so it is searched a ply shallower rather than with poor ordering.
+        if depth >= 4 && tt_move.is_none() {
+            depth -= 1;
+        }
         self.order(tt_move, ply);
         let side = self.position.side_to_move().index();
         let mut best = -INF;
@@ -912,12 +933,28 @@ impl<'a> Search<'a> {
             let mv = self.lists[ply].get(index);
             let quiet = is_quiet(mv);
             let gives_check = self.position.gives_check(mv);
-            if !pv_node && !in_check && quiet && !gives_check && best > -MATE_BOUND {
-                let late = 3 + (depth * depth) as usize;
-                if depth <= 4 && index >= late {
-                    continue;
-                }
-                if depth <= 3 && static_eval + 100 + 100 * depth <= alpha {
+            if !pv_node && !in_check && !gives_check && best > -MATE_BOUND {
+                if quiet {
+                    let late = 3 + (depth * depth) as usize;
+                    if depth <= 4 && index >= late {
+                        continue;
+                    }
+                    if depth <= 3 && eval + 100 + 100 * depth <= alpha {
+                        continue;
+                    }
+                    // Quiet moves with a poor record here, or that lose material to the
+                    // exchanges on their square, are left out near the leaves.
+                    let side_history = self.history[side][mv.from().index()][mv.to().index()];
+                    let continuation = self
+                        .continuation_index(mv, ply)
+                        .map_or(0, |index| self.continuation[index]);
+                    if depth <= 3 && side_history + continuation < -3000 * depth {
+                        continue;
+                    }
+                    if depth <= 6 && !self.position.see_ge(mv, -30 * depth * depth) {
+                        continue;
+                    }
+                } else if depth <= 6 && !self.position.see_ge(mv, -100 * depth) {
                     continue;
                 }
             }
@@ -1136,6 +1173,18 @@ impl<'a> Search<'a> {
             let mv = self.lists[ply].get(index);
             if !in_check && !self.position.see_ge(mv, 0) {
                 continue;
+            }
+            // Delta pruning: a capture that cannot lift the stand-pat score near alpha
+            // even with its victim won outright is not searched.
+            if !in_check && mv.promotion().is_none() {
+                let victim = if mv.flag() == 5 {
+                    Some(PieceType::Pawn)
+                } else {
+                    self.position.piece_at(mv.to()).map(|piece| piece.kind)
+                };
+                if victim.is_some_and(|kind| stand_pat + VALUES[kind.index()] + 200 <= alpha) {
+                    continue;
+                }
             }
             self.make(mv, ply);
             let score = -self.quiescence(-beta, -alpha, ply + 1);
