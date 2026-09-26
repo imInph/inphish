@@ -84,6 +84,11 @@ See [docs/TESTING.md](docs/TESTING.md) for every match.
 
 ## Build
 
+![Build and diagnostic commands](docs/images/build.jpg)
+
+<details>
+<summary>Commands as text</summary>
+
 Use stable Rust:
 
 ```sh
@@ -108,6 +113,8 @@ target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/P
 ```
 
 `perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `79837` nodes.
+
+</details>
 
 ## Testing
 
