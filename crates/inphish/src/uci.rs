@@ -147,7 +147,7 @@ impl Engine {
         match command {
             "uci" => {
                 write_line(out, concat!("id name inphish ", env!("CARGO_PKG_VERSION")))?;
-                write_line(out, "id author Kaevo")?;
+                write_line(out, "id author inph")?;
                 write_line(
                     out,
                     "option name Move Overhead type spin default 20 min 0 max 5000",
