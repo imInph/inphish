@@ -19,8 +19,8 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 
 ![Search, evaluation, endgames, parallel search, Chess960 and UCI features](docs/images/features.jpg)
 
-- **Search:** iterative deepening, principal variation search, a transposition table, null-move and futility pruning, late move reductions, killer, history, counter-move and static-exchange move ordering, and quiescence search.
-- **Evaluation:** since 3.0.0, Stockfish 13's NNUE network `nn-62ef826d1a6d` (HalfKP 256x2-32-32, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 13's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. Bare endings with less than two rooks' worth of pieces and at most one pawn, where Stockfish 13 also set the network aside, use inphish's hand-written evaluation.
+- **Search:** iterative deepening, principal variation search, a transposition table, null-move, futility, static-exchange and history pruning, ProbCut, late move reductions, internal iterative reductions, killer, history, counter-move and static-exchange move ordering, and quiescence search.
+- **Evaluation:** since 4.0.0, Stockfish 15.1's NNUE network `nn-ad9b42354671` (HalfKAv2_hm, 1024x2 with eight layer stacks, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 15.1's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. It makes the binary about 48 MB. 3.x used Stockfish 13's smaller `nn-62ef826d1a6d`.
 - **Endgames:** Syzygy WDL and DTZ probing. The tables are not included; download them separately, for example the 3-5 piece set of about 1 GB.
 - **Chess960:** with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook. Standard chess is the default.
 
@@ -52,7 +52,7 @@ No rating-list Elo has been measured. Each release is placed on Stockfish 19's `
 
 ![Elo per release on Stockfish 19's UCI_Elo scale at 1+0.01](docs/images/progress.jpg)
 
-The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, and 3.0.0, which added the NNUE network. Between 0.1.0 and 2.0.0 the differences are within the ranges. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, and 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0.
+The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, and 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even against Stockfish at its highest setting, 3190, so its figure rests on the top of the scale and is the least certain. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, and 4.0.0 scored 32 of 40 against 3.1.2.
 
 ![Match results against Stockfish 19, Morstilia V6 and MaiEngine](docs/images/results.jpg)
 
@@ -71,11 +71,12 @@ Compare versions within one column only. Match scores are wins / losses / draws 
 | [inphish v2.0.0](https://github.com/imInph/inphish/releases/tag/v2.0.0) | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
 | [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
 | [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+| [inphish v4.0.0](https://github.com/imInph/inphish/releases/tag/v4.0.0) | 3149 ± 102 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
 
 1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
 2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
 3. At 10+0.1. At 1+0.01 it scored 19 / 0 / 1 against Morstilia and 20 / 0 / 0 against MaiEngine, 18 of them MaiEngine time forfeits.
-4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15 and 12 games for 1.0.0, 2.0.0, 3.0.0 and 3.1.0), so they say little about playing strength. inphish lost no game on time.
+4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15, 12 and 11 games for 1.0.0, 2.0.0, 3.0.0, 3.1.0 and 4.0.0), so they say little about playing strength. inphish lost no game on time.
 5. Not placed on the ladder separately; it scored 21.5 and 19.5 of 40 against 3.0.0, where few games reach five pieces.
 
 </details>
@@ -112,7 +113,7 @@ target/release/inphish bench
 target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
 ```
 
-`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `79837` nodes.
+`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `66999` nodes.
 
 </details>
 
@@ -126,7 +127,7 @@ inphish has no opening book or pondering and no evaluation network of its own. T
 
 ## Acknowledgements
 
-The Chess Programming Wiki documents most of the techniques used here. The piece-square tables are Ronald Friederich's PeSTO tables as published on the wiki. The evaluation network `nn-62ef826d1a6d` and the HalfKP architecture it uses come from the [Stockfish](https://github.com/official-stockfish/Stockfish) project and its contributors, and are distributed under the GPL-3.0. The Syzygy probing code is ported from Stockfish 13's `tbprobe`, itself based on Ronald de Man's Syzygy tablebase code.
+The Chess Programming Wiki documents most of the techniques used here. The piece-square tables are Ronald Friederich's PeSTO tables as published on the wiki. The evaluation network `nn-ad9b42354671` and the HalfKAv2_hm architecture it uses, like the `nn-62ef826d1a6d` HalfKP network of 3.x, come from the [Stockfish](https://github.com/official-stockfish/Stockfish) project and its contributors, and are distributed under the GPL-3.0. The Syzygy probing code is ported from Stockfish 13's `tbprobe`, itself based on Ronald de Man's Syzygy tablebase code.
 
 ## License
 

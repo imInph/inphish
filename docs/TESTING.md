@@ -138,7 +138,7 @@ All Morstilia games ended in checkmate. 17 of the MaiEngine games were MaiEngine
 
 ## Network evaluation
 
-`tests/nnue/reference.txt` lists 2,169 positions with the raw network value, after division by 16 and for the side to move, that Stockfish 13 computes for them with `nn-62ef826d1a6d`. `tools/nnue_reference.py` produced it from a local Stockfish 13 build (tag `sf_13`) extended by one UCI command, `rawnnue`, printing `Eval::NNUE::evaluate`. The positions are the perft suites, ten Chess960 starts, the balanced book, and every seventh position of 170 random playouts. inphish's inference matches every value exactly. A second test derives each accumulator from its parent along every line to depth 3 from the standard and Chess960 perft positions, over 100,000 moves, and compares it with one computed from scratch. A third compares the vector dot products with the plain loop on random and extreme inputs. The Linux and Windows CI jobs run these tests on x86-64 with AVX2.
+`tests/nnue/reference.txt` lists 2,086 positions with the two network values, after division by 16 and for the side to move, that Stockfish 15.1 computes for them with `nn-ad9b42354671`: plain and adjusted for material, `Eval::NNUE::evaluate(pos, false)` and `(pos, true)`. `tools/nnue_reference.py` produced it from a local Stockfish 15.1 build (tag `sf_15.1`) extended by one UCI command, `rawnnue`, printing both. The positions are the perft suites, ten Chess960 starts, the balanced book, and every seventh position of 170 random playouts. inphish's inference matches every value exactly. A second test derives each accumulator from its parent along every line to depth 3 from the standard and Chess960 perft positions, over 100,000 moves, with king moves refreshed through the cache shared across the walk, and compares values and piece-square sums with an accumulator computed from scratch. A third compares the vector dot products with the plain loop on random and extreme inputs. The Linux and Windows CI jobs run these tests on x86-64 with AVX2. Until 4.0 the references came in the same way from Stockfish 13 and its network `nn-62ef826d1a6d`.
 
 ## 3.0 candidate checks
 
@@ -175,6 +175,42 @@ After 3.1.0 the early releases were placed on the same Stockfish 19 ladder, 20 g
 One Elo per version was fitted by maximum likelihood to all its rungs with the logistic Elo model, and the ranges are 95% intervals from the Fisher information. At 1+0.01, with the ladder results recorded above for the later versions: 0.1.0 2494 ± 90 (80 games), 1.0.0 2521 ± 84 (120), 2.0.0 2635 ± 97 (60), 3.0.0 2835 ± 97 (60). At 10+0.1: preview.2 1712 ± 126, 0.1.0 2777 ± 152 (40 games each).
 
 3.1.0 (`f74ffe8`) with the 3-5 piece tables against the frozen 1.0.0 and 2.0.0 builds, 40 games each at 1+0.01: 36 of 40 against 1.0.0 (35 wins, 3 losses, 2 draws) and 38.5 of 40 against 2.0.0 (38, 1, 1), all normal terminations.
+
+## 4.0 speed changes
+
+Changes meant only to make the search faster were accepted when the depth-4 bench signature stayed the same, so the search itself is unchanged, and the node rate went up. The rate was measured by fixed depth-15 searches from a fresh table on five positions on an Apple M2, since the bench finishes too quickly to time. Generating moves into one list per ply instead of returning a new list at every node raised it from 1.55 to 1.92 million nodes per second, probing the transposition table before generating moves to 1.95 million, and computing the network's hidden layers four rows at a time to 2.07 million. The Stockfish 15.1 network then ran at 1.53 million, and needed 21% fewer nodes to reach the same depth. A lazily updated accumulator, computed only when a node is evaluated, was no faster and was dropped.
+
+## Search changes after 3.1
+
+`tests/openings/random8.epd` holds 300 openings of eight random plies from the start position, each within 50 centipawns by Stockfish 15.1 at depth 12, produced by `tools/random_openings.py`. The balanced book's 28 openings allow only one 40-game batch, so later checks take consecutive blocks of 20 random openings with colors swapped. Every change was played against its parent at 1+0.01, Hash 16 MiB, one thread; a change was kept at 22 of 40 or better, and one scoring 18 to 22 was played again on new openings and kept at 41 of 80.
+
+| Change | Openings | Wins | Losses | Draws | Score | Kept |
+|---|---|---|---|---|---|---|
+| Stockfish 15.1 network, `dfbfc45`, against the speed changes | balanced | 20 | 4 | 16 | 28.0 | yes |
+| Capture history, a second continuation history, history-weighted reductions | balanced | 3 | 6 | 31 | 18.5 | |
+| The same, second batch | random 1-20 | 11 | 9 | 20 | 21.0 | no, 39.5 of 80 |
+| Capture history alone | random 21-40 | 6 | 12 | 22 | 17.0 | no |
+| Stored scores for pruning, internal iterative reduction, history and static-exchange pruning, delta pruning, `49416d7` | random 41-60 | 13 | 9 | 18 | 22.0 | yes |
+| Cut-node reductions and ProbCut, `5582e0c` | random 61-80 | 13 | 12 | 15 | 20.5 | |
+| The same, second batch | random 81-100 | 11 | 7 | 22 | 22.0 | yes, 42.5 of 80 |
+
+These are directional checks, not Elo measurements; the kept pruning changes cleared the threshold narrowly. With the new network the `UCI_Elo` limiter was too strong, 17 of 20 at 1600 and 15.5 at 2200 against Stockfish 19 at the same setting, so its node budget went from 600 to 200 at the lowest setting, which scored 14 of 20 at 1600 (14 wins, 6 losses) and 13 at 2200 (11 wins, 5 losses, 4 draws). The win, draw and loss model was refitted to 18,808 evaluations from 160 games between builds with the new network. At 1+0.01 the candidate ended its games with 0.13 seconds of its clock on average and never less than 0.03, so time management was left as it was.
+
+## 4.0 candidate checks
+
+Revision `5582e0c` (bench 66999), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colors swapped unless noted.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| 3.1.2 | 40 | 25 | 1 | 14 | 32.0 |
+| Morstilia 6.0.0 | 20 | 20 | 0 | 0 | 20.0 |
+| MaiEngine | 20 | 20 | 0 | 0 | 20.0 |
+| Stockfish 19, `UCI_Elo` 2800 | 20 | 16 | 1 | 3 | 17.5 |
+| Stockfish 19, `UCI_Elo` 3000 | 20 | 10 | 3 | 7 | 13.5 |
+| Stockfish 19, `UCI_Elo` 3190 | 20 | 4 | 5 | 11 | 9.5 |
+| Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 11 | 6 | 3 | 12.5 |
+
+All Morstilia games ended in checkmate. 11 of the MaiEngine games were MaiEngine time forfeits; MaiEngine was rebuilt from its repository at `3d710dc` with the .NET 10 SDK. inphish lost no game on time and made no illegal move. The ladder fit over the three rungs is 3149 ± 102 at 1+0.01, against 2835 ± 97 for 3.0.0; 3190 is Stockfish's highest `UCI_Elo`, so the estimate leans on the top rung. The network build `dfbfc45` alone had scored 14 of 20 at 3000 (10 wins, 2 losses, 8 draws). Matches from 4.0 on used fastchess 1.8.2-alpha built from source.
 
 ## Optional SPRT
 

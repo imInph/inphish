@@ -309,6 +309,18 @@ fn balanced_opening_book_parses() {
 }
 
 #[test]
+fn random_opening_book_parses() {
+    let book = include_str!("../../../tests/openings/random8.epd");
+    let mut count = 0;
+    for line in book.lines().filter(|line| !line.trim().is_empty()) {
+        let position = Position::from_fen(&format!("{line} 0 1")).expect(line);
+        assert!(!position.legal_moves().is_empty(), "{line}");
+        count += 1;
+    }
+    assert_eq!(count, 300);
+}
+
+#[test]
 fn chess960_opening_book_parses() {
     let book = include_str!("../../../tests/openings/chess960.epd");
     let mut count = 0;

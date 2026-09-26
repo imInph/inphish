@@ -1,5 +1,15 @@
 # inphzugzwang changelog
 
+## 4.0.0 - 2026-09-26
+
+- NNUE evaluation with Stockfish 15.1's HalfKAv2_hm network `nn-ad9b42354671` (GPL-3.0) in place of Stockfish 13's `nn-62ef826d1a6d`: king-bucketed, mirrored features including the kings, a 1024-wide accumulator with eight piece-square buckets, pairwise-multiplied inputs and eight layer stacks. inphish's inference matches Stockfish 15.1 exactly on 2,086 reference positions, plain and material-adjusted. King moves refresh through a per-thread cache of accumulators by king square. The binary grows to about 48 MB. The static evaluation follows Stockfish 15.1's scaling without its optimism term, and no longer falls back to the hand-written evaluation in bare endings.
+- Faster search with the play unchanged: moves are generated into one list per ply, the transposition table is probed before moves are generated, and the network's hidden layers are computed four rows at a time. Fixed-depth searches ran at 2.07 million nodes per second on an Apple M2 against 1.55 million before, with the old network.
+- Search: the stored score replaces the static evaluation for pruning where its bound makes it tighter; internal iterative reductions; history and static-exchange pruning near the leaves; delta pruning in quiescence; two plies more reduction at expected cut nodes; ProbCut. Capture history and a second continuation history were tried and dropped.
+- The `UCI_Elo` node budget is now 200 nodes at the lowest setting, doubling every 240 Elo; against Stockfish 19 at the same setting it scored 14/20 at 1600 and 13/20 at 2200. The win/draw/loss model was refitted to the new network.
+- `tests/openings/random8.epd` adds 300 balanced random openings from `tools/random_openings.py` for development matches.
+- Checks at 1+0.01, Hash 16 MiB, one thread: 32/40 against 3.1.2 (25 W / 1 L / 14 D); 20/20 against Morstilia 6.0.0, all checkmates; 20/20 against MaiEngine, 11 of them MaiEngine time forfeits; Stockfish 19 at `UCI_Elo` 2800, 3000 and 3190: 17.5, 13.5 and 9.5 of 20 (3.0.0: 11 and 5.5 at 2800 and 3000), a ladder fit of 3149 ± 102 against 2835 ± 97 for 3.0.0; Chess960 against Stockfish at 2800: 12.5/20 (3.0.0: 9/20). No inphish time losses or illegal moves. Small samples, not Elo measurements.
+- Depth-4 bench signature: 66999 nodes.
+
 ## 3.1.2 - 2026-09-26
 
 - Node limits (`go nodes`, and the node cap behind `UCI_Elo`) now apply to the total of all search threads. Before, only the main thread checked them and helper threads searched on until it finished, so with several threads on a busy machine `go nodes 20000` could report over 57,000 nodes. The overshoot is now at most about a thousand nodes per thread.
