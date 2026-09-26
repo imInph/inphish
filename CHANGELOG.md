@@ -1,5 +1,11 @@
 # inphzugzwang changelog
 
+## 3.1.1 - 2026-09-26
+
+- The UCI `id author` line now reads `inph`.
+- README figures share one light palette, with a new figure for the build and diagnostic commands.
+- No change to play: the depth-4 bench signature stays 79837 nodes.
+
 ## 3.1.0 - 2026-09-25
 
 - Syzygy endgame tablebases through the `SyzygyPath` option: WDL and DTZ probing ported from Stockfish 13's `tbprobe` (GPL-3.0) in the new `inphzugzwang-syzygy` crate. It matches Stockfish 13 on all 3,974 of 4,000 reference positions (426 with an en passant capture) that Stockfish 13 answers; the other 26 it fails, and Stockfish 19's search agrees with inphish on the four checked. `tests/syzygy/reference.txt` comes from `tools/syzygy_reference.py`; the test needs `SYZYGY_PATH` and is ignored otherwise. Tables are memory mapped on Unix and read into memory on Windows.
