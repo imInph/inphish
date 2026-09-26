@@ -448,7 +448,7 @@ fn strength_nodes(elo: u16) -> u64 {
 }
 
 pub const STRENGTH_MIN: u16 = 1320;
-pub const STRENGTH_MAX: u16 = 2600;
+pub const STRENGTH_MAX: u16 = 3000;
 
 /// Chooses a line in the manner of Stockfish's skill level: each line's score gets a push
 /// that grows with its distance from the best line and with a random share of the spread

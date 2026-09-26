@@ -309,7 +309,7 @@ fn uci_limit_strength() {
     );
     assert_eq!(
         engine.until("option name UCI_Elo"),
-        "option name UCI_Elo type spin default 2600 min 1320 max 2600"
+        "option name UCI_Elo type spin default 3000 min 1320 max 3000"
     );
     engine.until("uciok");
     engine.send("setoption name UCI_LimitStrength value true");
