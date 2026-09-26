@@ -392,15 +392,30 @@ impl Position {
     }
 
     pub fn legal_moves(&self) -> MoveList {
-        self.generate_legal_moves(false)
+        let mut moves = MoveList::new();
+        self.generate_legal_moves(false, &mut moves);
+        moves
     }
 
     pub fn tactical_moves(&self) -> MoveList {
-        self.generate_legal_moves(self.state.checkers.0 == 0)
+        let mut moves = MoveList::new();
+        self.generate_tactical_moves(&mut moves);
+        moves
     }
 
-    fn generate_legal_moves(&self, tactical_only: bool) -> MoveList {
-        let mut moves = MoveList::new();
+    /// Fills `moves` with the legal moves, replacing its contents. Reusing one list avoids
+    /// initialising and copying a fresh one at every node.
+    pub fn generate_moves(&self, moves: &mut MoveList) {
+        self.generate_legal_moves(false, moves);
+    }
+
+    /// Fills `moves` with the legal captures and promotions, or every evasion in check.
+    pub fn generate_tactical_moves(&self, moves: &mut MoveList) {
+        self.generate_legal_moves(self.state.checkers.0 == 0, moves);
+    }
+
+    fn generate_legal_moves(&self, tactical_only: bool, moves: &mut MoveList) {
+        moves.clear();
         let side = self.state.side;
         let enemy = side.other();
         let own = self.state.colors[side.index()];
@@ -430,7 +445,7 @@ impl Position {
             }
         }
         if self.state.checkers.count() > 1 {
-            return moves;
+            return;
         }
         let check_mask = if let Some(checker) = self.state.checkers.into_iter().next() {
             checker.bit() | between(king, checker)
@@ -455,7 +470,7 @@ impl Position {
                                 moves.push(Move::new(from, to, MoveFlag::QueenPromotion));
                             }
                         } else {
-                            self.push_pawn_move(&mut moves, from, to, false);
+                            self.push_pawn_move(moves, from, to, false);
                         }
                     }
                     let start_rank = if side == Color::White { 1 } else { 6 };
@@ -471,7 +486,7 @@ impl Position {
                 }
             }
             for to in pawn_attacks(side, from) & theirs & check_mask & pinned_line {
-                self.push_pawn_move(&mut moves, from, to, true);
+                self.push_pawn_move(moves, from, to, true);
             }
             if let Some(ep) = self.state.ep {
                 if pawn_attacks(side, from).contains(ep) {
@@ -520,9 +535,8 @@ impl Position {
             }
         }
         if !tactical_only && self.state.checkers.0 == 0 {
-            self.add_castles(&mut moves);
+            self.add_castles(moves);
         }
-        moves
     }
 
     fn push_pawn_move(&self, moves: &mut MoveList, from: Square, to: Square, capture: bool) {

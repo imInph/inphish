@@ -307,6 +307,14 @@ impl MoveList {
         self.len += 1;
     }
 
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    pub fn get(&self, index: usize) -> Move {
+        self.moves[..self.len][index].mv
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = Move> + '_ {
         self.moves[..self.len].iter().map(|entry| entry.mv)
     }
@@ -330,6 +338,11 @@ impl MoveList {
         for entry in &mut self.moves[..self.len] {
             entry.score = score(entry.mv);
         }
+        self.moves[..self.len].sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
+    }
+
+    /// Sorts by the scores already set, highest first.
+    pub fn sort_by_score(&mut self) {
         self.moves[..self.len].sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
     }
 

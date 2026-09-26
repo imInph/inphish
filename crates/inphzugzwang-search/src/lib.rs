@@ -91,6 +91,8 @@ struct Search<'a> {
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
     accumulators: Box<[Accumulator]>,
+    /// One move list per ply, reused so that no node initialises or copies a fresh one.
+    lists: Box<[MoveList]>,
 }
 
 pub fn search(
@@ -507,6 +509,7 @@ impl<'a> Search<'a> {
             pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
             pv_len: [0; MAX_PLY],
             accumulators,
+            lists: (0..=MAX_PLY).map(|_| MoveList::new()).collect(),
         }
     }
 
@@ -826,8 +829,8 @@ impl<'a> Search<'a> {
         if depth <= 0 {
             return self.quiescence(alpha, beta, ply);
         }
-        let mut moves = self.position.legal_moves();
-        if moves.is_empty() {
+        self.position.generate_moves(&mut self.lists[ply]);
+        if self.lists[ply].is_empty() {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
         if self.position.is_fifty_move_draw() {
@@ -904,13 +907,14 @@ impl<'a> Search<'a> {
                 }
             }
         }
-        self.order(&mut moves, tt_move, ply);
+        self.order(tt_move, ply);
         let side = self.position.side_to_move().index();
         let mut best = -INF;
         let mut best_move = Move::NULL;
         let mut quiets_tried = [Move::NULL; 64];
         let mut quiet_count = 0;
-        for (index, mv) in moves.iter().enumerate() {
+        for index in 0..self.lists[ply].len() {
+            let mv = self.lists[ply].get(index);
             let quiet = is_quiet(mv);
             let gives_check = self.position.gives_check(mv);
             if !pv_node && !in_check && quiet && !gives_check && best > -MATE_BOUND {
@@ -1078,9 +1082,17 @@ impl<'a> Search<'a> {
             return 0;
         }
         let in_check = self.position.checkers().0 != 0;
-        let mut moves = self.position.tactical_moves();
-        if moves.is_empty() && (in_check || self.position.legal_moves().is_empty()) {
-            return if in_check { -MATE + ply as i32 } else { 0 };
+        self.position.generate_tactical_moves(&mut self.lists[ply]);
+        if self.lists[ply].is_empty() {
+            // Without tactical moves the list is refilled only to tell stalemate apart,
+            // then emptied again so that no quiet move is searched.
+            if !in_check {
+                self.position.generate_moves(&mut self.lists[ply]);
+            }
+            if self.lists[ply].is_empty() {
+                return if in_check { -MATE + ply as i32 } else { 0 };
+            }
+            self.lists[ply].clear();
         }
         if self.position.is_repetition()
             || self.position.is_insufficient_material()
@@ -1124,8 +1136,9 @@ impl<'a> Search<'a> {
             }
             alpha = alpha.max(stand_pat);
         }
-        self.order(&mut moves, tt_move, ply);
-        for mv in moves.iter() {
+        self.order(tt_move, ply);
+        for index in 0..self.lists[ply].len() {
+            let mv = self.lists[ply].get(index);
             if !in_check && !self.position.see_ge(mv, 0) {
                 continue;
             }
@@ -1216,8 +1229,12 @@ impl<'a> Search<'a> {
         }
     }
 
-    fn order(&self, moves: &mut MoveList, preferred: Option<Move>, ply: usize) {
-        moves.sort_by_key(|mv| self.move_score(mv, preferred, ply));
+    fn order(&mut self, preferred: Option<Move>, ply: usize) {
+        for index in 0..self.lists[ply].len() {
+            let score = self.move_score(self.lists[ply].get(index), preferred, ply);
+            self.lists[ply].set_score(index, score);
+        }
+        self.lists[ply].sort_by_score();
     }
 }
 
