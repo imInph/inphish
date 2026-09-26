@@ -337,83 +337,111 @@ impl Network {
 
 /// An affine layer followed by Stockfish's clipped ReLU, which rescales by 2^-6.
 fn affine_relu(input: &[u8], weights: &[i8], bias: &[i32; HIDDEN]) -> [u8; HIDDEN] {
-    std::array::from_fn(|row| {
-        let weights = &weights[row * input.len()..(row + 1) * input.len()];
-        let sum = bias[row] + dot(input, weights);
-        (sum >> WEIGHT_SCALE_BITS).clamp(0, 127) as u8
-    })
+    let sums = products(input, weights);
+    std::array::from_fn(|row| ((bias[row] + sums[row]) >> WEIGHT_SCALE_BITS).clamp(0, 127) as u8)
 }
 
-/// Dot product of clipped activations (0 to 127) with signed weights. Lengths are
-/// multiples of 32, which every layer of this network has.
-fn dot(input: &[u8], weights: &[i8]) -> i32 {
-    debug_assert!(input.len() == weights.len() && input.len().is_multiple_of(32));
+/// Dot products of clipped activations (0 to 127) with each of the `HIDDEN` rows of
+/// signed weights stored one after another. Input lengths are multiples of 32, which
+/// every layer of this network has.
+fn products(input: &[u8], weights: &[i8]) -> [i32; HIDDEN] {
+    debug_assert!(weights.len() == HIDDEN * input.len() && input.len().is_multiple_of(32));
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("dotprod") {
             // SAFETY: the dot-product extension was just detected and the lengths match.
-            return unsafe { simd::dot_neon(input, weights) };
+            return unsafe { simd::products_neon(input, weights) };
         }
-        dot_scalar(input, weights)
+        products_scalar(input, weights)
     }
     #[cfg(target_arch = "x86_64")]
     {
         if std::is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 was just detected and the lengths match.
-            return unsafe { simd::dot_avx2(input, weights) };
+            return unsafe { simd::products_avx2(input, weights) };
         }
-        dot_scalar(input, weights)
+        products_scalar(input, weights)
     }
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
-        dot_scalar(input, weights)
+        products_scalar(input, weights)
     }
 }
 
-fn dot_scalar(input: &[u8], weights: &[i8]) -> i32 {
-    input
-        .iter()
-        .zip(weights)
-        .map(|(&input, &weight)| i32::from(input) * i32::from(weight))
-        .sum()
+fn products_scalar(input: &[u8], weights: &[i8]) -> [i32; HIDDEN] {
+    std::array::from_fn(|row| {
+        input
+            .iter()
+            .zip(&weights[row * input.len()..(row + 1) * input.len()])
+            .map(|(&input, &weight)| i32::from(input) * i32::from(weight))
+            .sum()
+    })
 }
 
 mod simd {
+    use super::HIDDEN;
+
+    /// Rows go four at a time so that each input load serves four independent sums.
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "dotprod")]
-    pub unsafe fn dot_neon(input: &[u8], weights: &[i8]) -> i32 {
+    pub unsafe fn products_neon(input: &[u8], weights: &[i8]) -> [i32; HIDDEN] {
         use std::arch::aarch64::*;
-        let mut sum = vdupq_n_s32(0);
-        let (input, weights) = (input.as_chunks::<16>().0, weights.as_chunks::<16>().0);
-        for (input, weights) in input.iter().zip(weights) {
-            // Activations never exceed 127, so they are also valid signed bytes.
-            let input = vreinterpretq_s8_u8(vld1q_u8(input.as_ptr()));
-            sum = vdotq_s32(sum, input, vld1q_s8(weights.as_ptr()));
+        let mut out = [0; HIDDEN];
+        let chunks = input.as_chunks::<16>().0;
+        for (group, out) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let rows: [&[i8]; 4] = std::array::from_fn(|index| {
+                let row = group * 4 + index;
+                &weights[row * input.len()..(row + 1) * input.len()]
+            });
+            let mut sums = [vdupq_n_s32(0); 4];
+            for (index, chunk) in chunks.iter().enumerate() {
+                // Activations never exceed 127, so they are also valid signed bytes.
+                let input = vreinterpretq_s8_u8(vld1q_u8(chunk.as_ptr()));
+                for (sum, row) in sums.iter_mut().zip(rows) {
+                    *sum = vdotq_s32(*sum, input, vld1q_s8(row[index * 16..].as_ptr()));
+                }
+            }
+            for (out, sum) in out.iter_mut().zip(sums) {
+                *out = vaddvq_s32(sum);
+            }
         }
-        vaddvq_s32(sum)
+        out
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    pub unsafe fn dot_avx2(input: &[u8], weights: &[i8]) -> i32 {
+    pub unsafe fn products_avx2(input: &[u8], weights: &[i8]) -> [i32; HIDDEN] {
         use std::arch::x86_64::*;
         let ones = _mm256_set1_epi16(1);
-        let mut sum = _mm256_setzero_si256();
-        let (input, weights) = (input.as_chunks::<32>().0, weights.as_chunks::<32>().0);
-        for (input, weights) in input.iter().zip(weights) {
-            let input = _mm256_loadu_si256(input.as_ptr().cast());
-            let weights = _mm256_loadu_si256(weights.as_ptr().cast());
-            // Pair sums stay within 2 * 127 * 128, so the saturating multiply-add is exact.
-            let pairs = _mm256_maddubs_epi16(input, weights);
-            sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pairs, ones));
+        let mut out = [0; HIDDEN];
+        let chunks = input.as_chunks::<32>().0;
+        for (group, out) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let rows: [&[i8]; 4] = std::array::from_fn(|index| {
+                let row = group * 4 + index;
+                &weights[row * input.len()..(row + 1) * input.len()]
+            });
+            let mut sums = [_mm256_setzero_si256(); 4];
+            for (index, chunk) in chunks.iter().enumerate() {
+                let input = _mm256_loadu_si256(chunk.as_ptr().cast());
+                for (sum, row) in sums.iter_mut().zip(rows) {
+                    let weights = _mm256_loadu_si256(row[index * 32..].as_ptr().cast());
+                    // Pair sums stay within 2 * 127 * 128, so the saturating multiply-add
+                    // is exact.
+                    let pairs = _mm256_maddubs_epi16(input, weights);
+                    *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(pairs, ones));
+                }
+            }
+            for (out, sum) in out.iter_mut().zip(sums) {
+                let halves = _mm_add_epi32(
+                    _mm256_castsi256_si128(sum),
+                    _mm256_extracti128_si256(sum, 1),
+                );
+                let pairs = _mm_add_epi32(halves, _mm_shuffle_epi32(halves, 0b01_00_11_10));
+                let total = _mm_add_epi32(pairs, _mm_shuffle_epi32(pairs, 0b10_11_00_01));
+                *out = _mm_cvtsi128_si32(total);
+            }
         }
-        let halves = _mm_add_epi32(
-            _mm256_castsi256_si128(sum),
-            _mm256_extracti128_si256(sum, 1),
-        );
-        let pairs = _mm_add_epi32(halves, _mm_shuffle_epi32(halves, 0b01_00_11_10));
-        let total = _mm_add_epi32(pairs, _mm_shuffle_epi32(pairs, 0b10_11_00_01));
-        _mm_cvtsi128_si32(total)
+        out
     }
 }
 
@@ -432,7 +460,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_dot_matches_scalar() {
+    fn vector_products_match_scalar() {
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = || {
             state ^= state << 13;
@@ -441,16 +469,20 @@ mod tests {
             state
         };
         for length in [32, 512] {
-            for _ in 0..200 {
+            for _ in 0..50 {
                 let input: Vec<u8> = (0..length).map(|_| (next() % 128) as u8).collect();
-                let weights: Vec<i8> = (0..length).map(|_| next() as i8).collect();
-                assert_eq!(dot(&input, &weights), dot_scalar(&input, &weights));
+                let weights: Vec<i8> = (0..length * HIDDEN).map(|_| next() as i8).collect();
+                assert_eq!(
+                    products(&input, &weights),
+                    products_scalar(&input, &weights)
+                );
             }
             let input = vec![127_u8; length];
             for extreme in [i8::MIN, i8::MAX] {
+                let weights = vec![extreme; length * HIDDEN];
                 assert_eq!(
-                    dot(&input, &vec![extreme; length]),
-                    dot_scalar(&input, &vec![extreme; length])
+                    products(&input, &weights),
+                    products_scalar(&input, &weights)
                 );
             }
         }
