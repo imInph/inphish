@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use inphzugzwang_core::{Color, Move, MoveList, PieceType, Position};
-use inphzugzwang_eval::{evaluate, VALUES};
-use inphzugzwang_nnue::{network, Accumulator};
+use inphzugzwang_core::{Move, MoveList, PieceType, Position};
+use inphzugzwang_eval::VALUES;
+use inphzugzwang_nnue::{network, non_pawn_material, Accumulator, RefreshCache};
 use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
 mod tt;
@@ -91,6 +91,7 @@ struct Search<'a> {
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
     accumulators: Box<[Accumulator]>,
+    refresh_cache: RefreshCache,
     /// One move list per ply, reused so that no node initialises or copies a fresh one.
     lists: Box<[MoveList]>,
 }
@@ -509,6 +510,7 @@ impl<'a> Search<'a> {
             pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
             pv_len: [0; MAX_PLY],
             accumulators,
+            refresh_cache: RefreshCache::new(),
             lists: (0..=MAX_PLY).map(|_| MoveList::new()).collect(),
         }
     }
@@ -576,7 +578,13 @@ impl<'a> Search<'a> {
         let delta = inphzugzwang_nnue::delta(&self.position, mv);
         self.position.make(mv);
         let (parents, children) = self.accumulators.split_at_mut(ply + 1);
-        network().apply(&parents[ply], &mut children[0], &delta, &self.position);
+        network().apply(
+            &parents[ply],
+            &mut children[0],
+            &delta,
+            &self.position,
+            &mut self.refresh_cache,
+        );
     }
 
     fn make_null(&mut self, ply: usize) {
@@ -584,34 +592,19 @@ impl<'a> Search<'a> {
         self.accumulators[ply + 1] = self.accumulators[ply].clone();
     }
 
-    /// Static evaluation in centipawns for the side to move. The network output is scaled
-    /// the way Stockfish 13 scales it, by remaining material and the fifty-move counter,
-    /// then converted at its 208 internal units per pawn. Positions with less than two
-    /// rooks' worth of pieces and at most one pawn, where Stockfish 13 also leaves the
-    /// network aside, use the hand-written evaluation.
+    /// Static evaluation in centipawns for the side to move: the network's adjusted
+    /// output scaled by remaining material and damped by the fifty-move counter as
+    /// Stockfish 15.1 does without its optimism term, then converted at 208 internal
+    /// units per pawn.
     fn static_evaluation(&self, ply: usize) -> i32 {
-        const PIECE_VALUES: [(PieceType, i32); 4] = [
-            (PieceType::Knight, 781),
-            (PieceType::Bishop, 825),
-            (PieceType::Rook, 1276),
-            (PieceType::Queen, 2538),
-        ];
         let position = &self.position;
-        let mut pieces = 0;
-        let mut pawns = 0;
-        for color in [Color::White, Color::Black] {
-            pawns += position.pieces(color, PieceType::Pawn).count() as i32;
-            for (kind, value) in PIECE_VALUES {
-                pieces += position.pieces(color, kind).count() as i32 * value;
-            }
-        }
-        if pieces < 2 * 1276 && pawns < 2 {
-            return evaluate(position);
-        }
-        let rule50 = i32::from(position.halfmove_clock().min(100));
-        let raw = network().evaluate(&self.accumulators[ply], position.side_to_move());
-        let scaled = raw * (641 + (pieces + 2 * 126 * pawns) / 32 - 4 * rule50) / 1024 + 28;
-        (scaled * 100 / 208 * (100 - rule50) / 100).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+        let material = non_pawn_material(position);
+        let nnue = network()
+            .evaluate(&self.accumulators[ply], position)
+            .adjusted(material);
+        let scaled = nnue * (1064 + 106 * material / 5120) / 1024;
+        let damped = scaled * (195 - i32::from(position.halfmove_clock())) / 211;
+        (damped * 100 / 208).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
     fn root_moves(&self) -> Vec<Move> {
