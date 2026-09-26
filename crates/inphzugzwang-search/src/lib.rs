@@ -829,13 +829,6 @@ impl<'a> Search<'a> {
         if depth <= 0 {
             return self.quiescence(alpha, beta, ply);
         }
-        self.position.generate_moves(&mut self.lists[ply]);
-        if self.lists[ply].is_empty() {
-            return if in_check { -MATE + ply as i32 } else { 0 };
-        }
-        if self.position.is_fifty_move_draw() {
-            return 0;
-        }
         // No line from here can mate faster than a mate at the next ply or be mated
         // sooner than now, so a window outside those bounds is already decided.
         alpha = alpha.max(-MATE + ply as i32);
@@ -854,7 +847,9 @@ impl<'a> Search<'a> {
                 None
             }
         });
-        if !pv_node {
+        // The table can cut before any move is generated, except where the fifty-move
+        // rule may already have ended the game.
+        if !pv_node && self.position.halfmove_clock() < 100 {
             if let Some(record) = hit.filter(|record| {
                 record.depth >= depth as u8 && (record.mv == Move::NULL || tt_move.is_some())
             }) {
@@ -865,6 +860,13 @@ impl<'a> Search<'a> {
                     _ => {}
                 }
             }
+        }
+        self.position.generate_moves(&mut self.lists[ply]);
+        if self.lists[ply].is_empty() {
+            return if in_check { -MATE + ply as i32 } else { 0 };
+        }
+        if self.position.halfmove_clock() >= 100 {
+            return 0;
         }
         if let Some(score) = self.probe_tablebases(depth, alpha, beta, ply, key, pv_node) {
             return score;
@@ -1082,18 +1084,6 @@ impl<'a> Search<'a> {
             return 0;
         }
         let in_check = self.position.checkers().0 != 0;
-        self.position.generate_tactical_moves(&mut self.lists[ply]);
-        if self.lists[ply].is_empty() {
-            // Without tactical moves the list is refilled only to tell stalemate apart,
-            // then emptied again so that no quiet move is searched.
-            if !in_check {
-                self.position.generate_moves(&mut self.lists[ply]);
-            }
-            if self.lists[ply].is_empty() {
-                return if in_check { -MATE + ply as i32 } else { 0 };
-            }
-            self.lists[ply].clear();
-        }
         if self.position.is_repetition()
             || self.position.is_insufficient_material()
             || self.position.is_fifty_move_draw()
@@ -1114,6 +1104,18 @@ impl<'a> Search<'a> {
                 Bound::Upper if record.score <= alpha => return record.score,
                 _ => {}
             }
+        }
+        self.position.generate_tactical_moves(&mut self.lists[ply]);
+        if self.lists[ply].is_empty() {
+            // Without tactical moves the list is refilled only to tell stalemate apart,
+            // then emptied again so that no quiet move is searched.
+            if !in_check {
+                self.position.generate_moves(&mut self.lists[ply]);
+            }
+            if self.lists[ply].is_empty() {
+                return if in_check { -MATE + ply as i32 } else { 0 };
+            }
+            self.lists[ply].clear();
         }
         let raw_eval = if in_check {
             0
