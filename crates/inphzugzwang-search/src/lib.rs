@@ -711,12 +711,12 @@ impl<'a> Search<'a> {
             self.make(mv, 0);
             let child_depth = depth as i32 - 1;
             let mut score = if index == 0 {
-                -self.negamax(child_depth, -beta, -alpha, 1, true)
+                -self.negamax(child_depth, -beta, -alpha, 1, true, false)
             } else {
-                -self.negamax(child_depth, -alpha - 1, -alpha, 1, true)
+                -self.negamax(child_depth, -alpha - 1, -alpha, 1, true, true)
             };
             if index > 0 && score > alpha && score < beta && !self.aborted {
-                score = -self.negamax(child_depth, -beta, -alpha, 1, true);
+                score = -self.negamax(child_depth, -beta, -alpha, 1, true, false);
             }
             self.position.unmake();
             if self.aborted {
@@ -804,6 +804,7 @@ impl<'a> Search<'a> {
         mut beta: i32,
         ply: usize,
         allow_null: bool,
+        cut_node: bool,
     ) -> i32 {
         self.pv_len[ply] = 0;
         if self.visit(ply) {
@@ -908,13 +909,58 @@ impl<'a> Search<'a> {
                 let reduction = 3 + depth / 4 + ((eval - beta) / 200).min(3);
                 self.played[ply] = None;
                 self.make_null(ply);
-                let score = -self.negamax(depth - 1 - reduction, -beta, -beta + 1, ply + 1, false);
+                let score = -self.negamax(
+                    depth - 1 - reduction,
+                    -beta,
+                    -beta + 1,
+                    ply + 1,
+                    false,
+                    !cut_node,
+                );
                 self.position.unmake();
                 if self.aborted {
                     return 0;
                 }
                 if score >= beta {
                     return if score >= MATE_BOUND { beta } else { score };
+                }
+            }
+        }
+        // ProbCut: a capture that beats beta by a margin in quiescence and then in a
+        // reduced search is taken to hold at full depth as well.
+        let probcut_beta = beta + 200;
+        if !pv_node
+            && !in_check
+            && depth >= 5
+            && beta.abs() < MATE_BOUND
+            && !hit.is_some_and(|record| {
+                record.depth as i32 >= depth - 3 && record.score < probcut_beta
+            })
+        {
+            for index in 0..self.lists[ply].len() {
+                let mv = self.lists[ply].get(index);
+                if is_quiet(mv) || !self.position.see_ge(mv, probcut_beta - static_eval) {
+                    continue;
+                }
+                self.played[ply] = Some(self.piece_square(mv));
+                self.make(mv, ply);
+                let mut score = -self.quiescence(-probcut_beta, -probcut_beta + 1, ply + 1);
+                if score >= probcut_beta && !self.aborted {
+                    score = -self.negamax(
+                        depth - 4,
+                        -probcut_beta,
+                        -probcut_beta + 1,
+                        ply + 1,
+                        true,
+                        !cut_node,
+                    );
+                }
+                self.position.unmake();
+                if self.aborted {
+                    return 0;
+                }
+                if score >= probcut_beta {
+                    return score;
                 }
             }
         }
@@ -964,7 +1010,14 @@ impl<'a> Search<'a> {
             let new_depth = depth - 1;
             let mut score;
             if index == 0 {
-                score = -self.negamax(new_depth, -beta, -alpha, ply + 1, true);
+                score = -self.negamax(
+                    new_depth,
+                    -beta,
+                    -alpha,
+                    ply + 1,
+                    true,
+                    !pv_node && !cut_node,
+                );
             } else {
                 let mut reduction = 0;
                 if depth >= 3 && index >= 3 && quiet && !in_check && !gives_check {
@@ -975,15 +1028,27 @@ impl<'a> Search<'a> {
                     if self.killers[ply].contains(&mv) {
                         reduction -= 1;
                     }
+                    if cut_node {
+                        reduction += 2;
+                    }
                     reduction -= history / 8192;
                     reduction = reduction.clamp(0, new_depth - 1);
                 }
-                score = -self.negamax(new_depth - reduction, -alpha - 1, -alpha, ply + 1, true);
+                // Reduced searches expect to fail high below, the full-depth retry flips
+                // the expectation, and a principal variation search expects neither.
+                score = -self.negamax(
+                    new_depth - reduction,
+                    -alpha - 1,
+                    -alpha,
+                    ply + 1,
+                    true,
+                    reduction > 0 || !cut_node,
+                );
                 if score > alpha && reduction > 0 && !self.aborted {
-                    score = -self.negamax(new_depth, -alpha - 1, -alpha, ply + 1, true);
+                    score = -self.negamax(new_depth, -alpha - 1, -alpha, ply + 1, true, !cut_node);
                 }
                 if score > alpha && score < beta && !self.aborted {
-                    score = -self.negamax(new_depth, -beta, -alpha, ply + 1, true);
+                    score = -self.negamax(new_depth, -beta, -alpha, ply + 1, true, false);
                 }
             }
             self.position.unmake();
