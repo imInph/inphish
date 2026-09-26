@@ -26,6 +26,11 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 
 ### UCI options
 
+![UCI options with types, defaults and ranges](docs/images/options.jpg)
+
+<details>
+<summary>Options as text</summary>
+
 | Option | Default | Notes |
 |---|---|---|
 | `Hash` | 16 | Transposition table size in MiB, 1 to 1024 |
@@ -38,6 +43,8 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 | `UCI_ShowWDL` | false | Adds win/draw/loss estimates to `info` output |
 | `UCI_Chess960` | false | Chess960 castling and FEN handling |
 | `SyzygyPath` | empty | One or more table directories, separated by `:` (`;` on Windows) |
+
+</details>
 
 ## Strength
 
