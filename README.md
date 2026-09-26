@@ -39,7 +39,7 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 | `Move Overhead` | 20 | Milliseconds reserved per move for GUI and network lag |
 | `MultiPV` | 1 | Number of principal variations, 1 to 256 |
 | `UCI_LimitStrength` | false | Enables `UCI_Elo` |
-| `UCI_Elo` | 2600 | 1320 to 2600, approximate |
+| `UCI_Elo` | 3000 | 1320 to 3000, approximate |
 | `UCI_ShowWDL` | false | Adds win/draw/loss estimates to `info` output |
 | `UCI_Chess960` | false | Chess960 castling and FEN handling |
 | `SyzygyPath` | empty | One or more table directories, separated by `:` (`;` on Windows) |
@@ -113,7 +113,7 @@ target/release/inphish bench
 target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
 ```
 
-`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `66999` nodes.
+`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, `eval` prints the hand-written evaluation, which play no longer uses since 4.0.0, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `66999` nodes.
 
 </details>
 
