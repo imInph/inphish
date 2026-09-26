@@ -1302,8 +1302,8 @@ fn is_quiet(mv: Move) -> bool {
 /// `win = 1 / (1 + exp((a - score) / b))`, with loss mirrored, was fitted by maximum
 /// likelihood to inphish self-play evaluations at 1+0.01, so it is only an estimate.
 pub fn wdl(score: i32) -> (u16, u16, u16) {
-    const A: f64 = 340.0;
-    const B: f64 = 236.0;
+    const A: f64 = 420.0;
+    const B: f64 = 204.0;
     if score >= MATE_BOUND {
         return (1000, 0, 0);
     }
