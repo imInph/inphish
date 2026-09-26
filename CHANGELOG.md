@@ -1,5 +1,10 @@
 # inphzugzwang changelog
 
+## 3.1.2 - 2026-09-26
+
+- Node limits (`go nodes`, and the node cap behind `UCI_Elo`) now apply to the total of all search threads. Before, only the main thread checked them and helper threads searched on until it finished, so with several threads on a busy machine `go nodes 20000` could report over 57,000 nodes. The overshoot is now at most about a thousand nodes per thread.
+- No change with one thread: the depth-4 bench signature stays 79837 nodes.
+
 ## 3.1.1 - 2026-09-26
 
 - The UCI `id author` line now reads `inph`.
