@@ -8,7 +8,7 @@
 - The win/draw/loss model behind `UCI_ShowWDL` was refitted to the new network, and now reads more drawish.
 - The binary is about 200 MB with the network and the book.
 - The license file is again the unmodified GPL-3.0 text; the copyright notice moved to the README.
-- Checks at 1+0.01, Hash 16 MiB, one thread: 23/40 against 4.0.0 (17 W / 11 L / 12 D); 20/20 against Morstilia 6.0.0, all checkmates; 20/20 against MaiEngine, 15 of them MaiEngine time forfeits; Stockfish 19 at `UCI_Elo` 3000 and 3190: 16 and 12.5 of 20 (4.0.0: 13.5 and 9.5), a ladder fit of 3264 ± 123 against 3149 ± 102 for 4.0.0; Chess960 against Stockfish at 2800: 17.5/20 (4.0.0: 12.5/20). No inphish time losses or illegal moves. Small samples, not Elo measurements.
+- Checks at 1+0.01, Hash 16 MiB, one thread: 23/40 against 4.0.0 (17 W / 11 L / 12 D); 20/20 against Morstilia 6.0.0, all checkmates; 20/20 against MaiEngine, 15 of them MaiEngine time forfeits; on the tagged revision with the opponents' books off, 20/20 against Morstilia v7-pre (`511a656`), all checkmates, and 20/20 against Mai V2 (`e5d71bc`), 9 of them Mai V2 time forfeits; Stockfish 19 at `UCI_Elo` 3000 and 3190: 16 and 12.5 of 20 (4.0.0: 13.5 and 9.5), a ladder fit of 3264 ± 123 against 3149 ± 102 for 4.0.0; Chess960 against Stockfish at 2800: 17.5/20 (4.0.0: 12.5/20). No inphish time losses or illegal moves. Small samples, not Elo measurements.
 - Depth-4 bench signature: 74474 nodes.
 
 ## 4.0.0 - 2026-09-26

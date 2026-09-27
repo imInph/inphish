@@ -59,31 +59,32 @@ No rating-list Elo has been measured. Each release is placed on Stockfish 19's `
 
 The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search, and 5.0.0, which moved to Stockfish 19's network with threat and pawn-pair inputs. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even and 5.0.0 12.5 of 20 against Stockfish at its highest setting, 3190, so their figures rest on the top of the scale and are the least certain. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, 4.0.0 scored 32 of 40 against 3.1.2, and 5.0.0 23 of 40 against 4.0.0, although it searches about half as many nodes per second.
 
-![Match results against Stockfish 19, Morstilia V6 and MaiEngine](docs/images/results.jpg)
+![Match results against Stockfish 19, Morstilia v7-pre and Mai V2](docs/images/results.jpg)
 
-At 1+0.01 MaiEngine loses many games on time, so its results say little about playing strength; inphish lost no game on time.
+At 1+0.01 Mai V2 loses many games on time, as MaiEngine did, so its results say little about playing strength; inphish lost no game on time. 5.0.0 also scored 20 of 20 against Morstilia V6 and against MaiEngine.
 
 <details>
 <summary>Every release, both time controls</summary>
 
 Compare versions within one column only. Match scores are wins / losses / draws over 20 games.
 
-| Version | Elo, 1+0.01 | Elo, 10+0.1 | [Morstilia V6](https://github.com/ALPDM447/MorstiliaChessEngine) | [MaiEngine](https://github.com/Justmaii/MaiEngine) |
-|---|---|---|---|---|
-| [inphish v0.1.0 pre 2](https://github.com/imInph/inphish/releases/tag/v0.1.0-preview.2) | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) |
-| [inphish v0.1.0](https://github.com/imInph/inphish/releases/tag/v0.1.0) | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) |
-| [inphish v1.0.0](https://github.com/imInph/inphish/releases/tag/v1.0.0) | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
-| [inphish v2.0.0](https://github.com/imInph/inphish/releases/tag/v2.0.0) | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
-| [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
-| [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
-| [inphish v4.0.0](https://github.com/imInph/inphish/releases/tag/v4.0.0) | 3149 ± 102 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
-| [inphish v5.0.0](https://github.com/imInph/inphish/releases/tag/v5.0.0) | 3264 ± 123 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+| Version | Elo, 1+0.01 | Elo, 10+0.1 | [Morstilia V6](https://github.com/ALPDM447/MorstiliaChessEngine) | [MaiEngine](https://github.com/Justmaii/MaiEngine) | [Morstilia v7-pre](https://github.com/ALPDM447/MorstiliaChessEngine) | [Mai V2](https://github.com/Justmaii/MaiEngineV2) |
+|---|---|---|---|---|---|---|
+| [inphish v0.1.0 pre 2](https://github.com/imInph/inphish/releases/tag/v0.1.0-preview.2) | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) | | |
+| [inphish v0.1.0](https://github.com/imInph/inphish/releases/tag/v0.1.0) | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) | | |
+| [inphish v1.0.0](https://github.com/imInph/inphish/releases/tag/v1.0.0) | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) | | |
+| [inphish v2.0.0](https://github.com/imInph/inphish/releases/tag/v2.0.0) | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | |
+| [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) | | |
+| [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | |
+| [inphish v4.0.0](https://github.com/imInph/inphish/releases/tag/v4.0.0) | 3149 ± 102 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | |
+| [inphish v5.0.0](https://github.com/imInph/inphish/releases/tag/v5.0.0) | 3264 ± 123 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) |
 
 1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
 2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
 3. At 10+0.1. At 1+0.01 it scored 19 / 0 / 1 against Morstilia and 20 / 0 / 0 against MaiEngine, 18 of them MaiEngine time forfeits.
 4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15, 12, 11 and 15 games for 1.0.0, 2.0.0, 3.0.0, 3.1.0, 4.0.0 and 5.0.0), so they say little about playing strength. inphish lost no game on time.
 5. Not placed on the ladder separately; it scored 21.5 and 19.5 of 40 against 3.0.0, where few games reach five pieces.
+6. Morstilia v7-pre (its repository at `511a656`) and Mai V2 (`e5d71bc`) played with their own opening books off. Mai V2 lost 9 of these games on time; all the Morstilia games ended in checkmate. Earlier releases did not play them.
 
 </details>
 

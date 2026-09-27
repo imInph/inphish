@@ -230,7 +230,7 @@ Revision `18dbaeb` (bench 74474), one thread, Hash 16 MiB, 1+0.01, two concurren
 | Stockfish 19, `UCI_Elo` 3190 | 20 | 9 | 4 | 7 | 12.5 |
 | Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 16 | 1 | 3 | 17.5 |
 
-All Morstilia games ended in checkmate. 15 of the MaiEngine games were MaiEngine time forfeits. inphish lost no game on time and made no illegal move. The ladder fit over the two rungs is 3264 ± 123 at 1+0.01, against 3149 ± 102 for 4.0.0 over three; 3190 is Stockfish's highest `UCI_Elo`, so the estimate leans on the top rung. The win, draw and loss model was refitted to 4,674 evaluations from 40 self-play games of `18dbaeb` on the random openings, 27 of them drawn; the earlier fits had been held at the edge of the search grid, which is now wider.
+All Morstilia games ended in checkmate. 15 of the MaiEngine games were MaiEngine time forfeits. The tagged revision `0ee502d` (bench 74474) then played the newer versions of both engines with their own opening books off (`option.BookEnabled=false` and `option.OwnBook=false`): 20 of 20 against Morstilia v7-pre (repository `511a656`, reporting Morstilia 7.0.0), all checkmates, and 20 of 20 against Mai V2 (repository `e5d71bc`, run through its `maiengine-uci` script), 9 of them Mai V2 time forfeits. inphish lost no game on time and made no illegal move. The ladder fit over the two rungs is 3264 ± 123 at 1+0.01, against 3149 ± 102 for 4.0.0 over three; 3190 is Stockfish's highest `UCI_Elo`, so the estimate leans on the top rung. The win, draw and loss model was refitted to 4,674 evaluations from 40 self-play games of `18dbaeb` on the random openings, 27 of them drawn; the earlier fits had been held at the edge of the search grid, which is now wider.
 
 ## Optional SPRT
 
