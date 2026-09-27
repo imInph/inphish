@@ -327,6 +327,12 @@ impl Position {
         self.state.castling
     }
 
+    /// The square behind a pawn that has just moved two squares, whether or not any pawn
+    /// can capture there.
+    pub fn en_passant(&self) -> Option<Square> {
+        self.state.ep
+    }
+
     fn is_attacked(
         &self,
         target: Square,

@@ -14,6 +14,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "inphzugzwang-book"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-core",
+]
+
+[[package]]
 name = "inphzugzwang-core"
 version = "0.1.0"
 
