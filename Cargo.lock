@@ -6,6 +6,7 @@ version = 4
 name = "inphish"
 version = "4.0.0"
 dependencies = [
+ "inphzugzwang-book",
  "inphzugzwang-core",
  "inphzugzwang-eval",
  "inphzugzwang-nnue",
@@ -17,6 +18,14 @@ dependencies = [
 name = "inphzugzwang-book"
 version = "0.1.0"
 dependencies = [
+ "inphzugzwang-core",
+]
+
+[[package]]
+name = "inphzugzwang-book-builder"
+version = "0.1.0"
+dependencies = [
+ "inphzugzwang-book",
  "inphzugzwang-core",
 ]
 
