@@ -136,4 +136,8 @@ The Chess Programming Wiki documents most of the techniques used here. The piece
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+inphish, Copyright (C) 2026 imInph.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text of the GNU General Public License, version 3.
+
+The bundled networks come from the Stockfish project and are GPL-3.0; the opening book is built from Lichess games released under CC0.
