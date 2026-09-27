@@ -1,5 +1,16 @@
 # inphzugzwang changelog
 
+## 5.0.0 - 2026-09-27
+
+- NNUE evaluation with Stockfish 19's network `nn-1a298aa575a0` (GPL-3.0) in place of Stockfish 15.1's `nn-ad9b42354671`. Besides the king-bucketed piece squares it reads threats of one piece on another and pairs of pawns on the same or neighbouring files, into the same 1024-wide accumulator with eight layer stacks. inphish's inference matches Stockfish 19 exactly on 2,253 reference positions, including its final evaluation formula, which the static evaluation now uses without the optimism term. Changed threats and pawn pairs are found around the squares each move changes, all changed rows are applied in one tiled Neon or AVX2 pass, and the first layer reads only non-zero input groups. The search runs at about half the nodes per second of 4.0.0 and still scored 23 of 40 against it.
+- A bundled Polyglot opening book of 6,378,170 entries (102 MB) built from Lichess games of August 2026 between players rated 2000 and above (CC0), behind the new options `OwnBook` (off by default), `BookFile` for another Polyglot book, `Book Depth` (40 plies) and `Book Best Move`. The book is not used in analysis, pondering, `searchmoves`, `MultiPV` above 1 or Chess960. `tools/book` rebuilds it; the source and filters are in `crates/inphzugzwang-book/book/README.md`. Polyglot keys follow the format exactly, including the en-passant file for a pinned pawn.
+- `UCI_Elo` node budgets now come from calibration points interpolated between, since the stronger network made the old doubling rule too strong in the middle of the range. Against Stockfish 19 at the same setting: 13.5/20 at 1600, 12.5/20 at 2200, 10.5/20 at 2600 and at 2800, 10/20 at 3000.
+- The win/draw/loss model behind `UCI_ShowWDL` was refitted to the new network, and now reads more drawish.
+- The binary is about 200 MB with the network and the book.
+- The license file is again the unmodified GPL-3.0 text; the copyright notice moved to the README.
+- Checks at 1+0.01, Hash 16 MiB, one thread: 23/40 against 4.0.0 (17 W / 11 L / 12 D); 20/20 against Morstilia 6.0.0, all checkmates; 20/20 against MaiEngine, 15 of them MaiEngine time forfeits; Stockfish 19 at `UCI_Elo` 3000 and 3190: 16 and 12.5 of 20 (4.0.0: 13.5 and 9.5), a ladder fit of 3264 ± 123 against 3149 ± 102 for 4.0.0; Chess960 against Stockfish at 2800: 17.5/20 (4.0.0: 12.5/20). No inphish time losses or illegal moves. Small samples, not Elo measurements.
+- Depth-4 bench signature: 74474 nodes.
+
 ## 4.0.0 - 2026-09-26
 
 - NNUE evaluation with Stockfish 15.1's HalfKAv2_hm network `nn-ad9b42354671` (GPL-3.0) in place of Stockfish 13's `nn-62ef826d1a6d`: king-bucketed, mirrored features including the kings, a 1024-wide accumulator with eight piece-square buckets, pairwise-multiplied inputs and eight layer stacks. inphish's inference matches Stockfish 15.1 exactly on 2,086 reference positions, plain and material-adjusted. King moves refresh through a per-thread cache of accumulators by king square. The binary grows to about 48 MB. The static evaluation follows Stockfish 15.1's scaling without its optimism term, and no longer falls back to the hand-written evaluation in bare endings.

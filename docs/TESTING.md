@@ -138,7 +138,9 @@ All Morstilia games ended in checkmate. 17 of the MaiEngine games were MaiEngine
 
 ## Network evaluation
 
-`tests/nnue/reference.txt` lists 2,086 positions with the two network values, after division by 16 and for the side to move, that Stockfish 15.1 computes for them with `nn-ad9b42354671`: plain and adjusted for material, `Eval::NNUE::evaluate(pos, false)` and `(pos, true)`. `tools/nnue_reference.py` produced it from a local Stockfish 15.1 build (tag `sf_15.1`) extended by one UCI command, `rawnnue`, printing both. The positions are the perft suites, ten Chess960 starts, the balanced book, and every seventh position of 170 random playouts. inphish's inference matches every value exactly. A second test derives each accumulator from its parent along every line to depth 3 from the standard and Chess960 perft positions, over 100,000 moves, with king moves refreshed through the cache shared across the walk, and compares values and piece-square sums with an accumulator computed from scratch. A third compares the vector dot products with the plain loop on random and extreme inputs. The Linux and Windows CI jobs run these tests on x86-64 with AVX2. Until 4.0 the references came in the same way from Stockfish 13 and its network `nn-62ef826d1a6d`.
+`tests/nnue/reference.txt` lists 2,253 positions with three values that Stockfish 19 computes for them with `nn-1a298aa575a0`, in internal units for the side to move: the network's piece-square and positional outputs, each divided by 16, and `Eval::evaluate` with no optimism, left out in check. `tools/nnue_reference.py` produced it from a local Stockfish 19 build extended by one UCI command, `rawnnue`, printing all three. The positions are the perft suites, ten Chess960 starts, the balanced book, and every seventh position of 170 random playouts. inphish's inference matches every value exactly. A second test derives each accumulator from its parent along every line to depth 3 from the standard and Chess960 perft positions, over 100,000 moves, with the changed threats and pawn pairs found around the squares each move changes and king moves refreshed through the cache shared across the walk, and compares values and piece-square sums with an accumulator computed from scratch. Two more compare the vector dot products and the sparse first layer with plain loops on random and extreme inputs. The Linux and Windows CI jobs run these tests on x86-64 with AVX2. Until 5.0 the references came in the same way from Stockfish 15.1 and `nn-ad9b42354671`, and before 4.0 from Stockfish 13 and `nn-62ef826d1a6d`.
+
+The Polyglot tests check keys against the nine published with the book format, including en-passant cases, and a position whose only pawn next to a double-pushed pawn is pinned, whose key must still include the en-passant file as the format specifies. Others read weighted moves and castling, given as the king taking its rook, from a small book, skip a colliding illegal move, and reject malformed files. The UCI test checks the book options, that the book is off by default and used only for ordinary searches within the book depth, and that `BookFile` loads a one-entry book. The book builder's own tests read Lichess movetext with clock comments, disambiguation and promotions.
 
 ## 3.0 candidate checks
 
@@ -211,6 +213,24 @@ Revision `5582e0c` (bench 66999), one thread, Hash 16 MiB, 1+0.01, two concurren
 | Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 11 | 6 | 3 | 12.5 |
 
 All Morstilia games ended in checkmate. 11 of the MaiEngine games were MaiEngine time forfeits; MaiEngine was rebuilt from its repository at `3d710dc` with the .NET 10 SDK. inphish lost no game on time and made no illegal move. The ladder fit over the three rungs is 3149 ± 102 at 1+0.01, against 2835 ± 97 for 3.0.0; 3190 is Stockfish's highest `UCI_Elo`, so the estimate leans on the top rung. The network build `dfbfc45` alone had scored 14 of 20 at 3000 (10 wins, 2 losses, 8 draws). Matches from 4.0 on used fastchess 1.8.2-alpha built from source.
+
+## 5.0 candidate checks
+
+The Stockfish 19 network (`d73c0a8`, bench 74474) against 4.0.0 at 1+0.01, Hash 16 MiB, balanced book: 40 games, 17 wins, 11 losses, 12 draws, 23 of 40, although it searched about 672,000 nodes per second on a middlegame position against 1.29 million for 4.0.0 (Stockfish 19 itself runs at about 1.03 million on the same machine).
+
+With the new network `UCI_Elo` kept 12 of 20 at 1600 but scored 17.5 of 20 at 2200 against Stockfish 19 at the same setting, so the single rule of 200 nodes doubling every 240 Elo was replaced by node budgets interpolated between calibration points. Tried budgets, as base-2 logarithms of nodes: 2200 at 9.4 scored 4 of 20 and at 10.3 12.5 of 20; 2600 at 11.0 scored 10.5 of 20; 3000 at 13.6 scored 5 of 20 and at 14.6 10 of 20; 2800 at 13.3 scored 14.5 of 20. The adopted points are 1320 at 7.4, 1600 at 8.4, 2200 at 10.3, 2600 at 11.0, 2800 at 12.8 and 3000 at 14.6, and on `18dbaeb` scored 13.5 of 20 at 1600 (13 wins, 6 losses, 1 draw) and 10.5 at 2800 (9 wins, 8 losses, 3 draws).
+
+Revision `18dbaeb` (bench 74474), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colours swapped unless noted, opening book off.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| Morstilia 6.0.0 | 20 | 20 | 0 | 0 | 20.0 |
+| MaiEngine | 20 | 20 | 0 | 0 | 20.0 |
+| Stockfish 19, `UCI_Elo` 3000 | 20 | 15 | 3 | 2 | 16.0 |
+| Stockfish 19, `UCI_Elo` 3190 | 20 | 9 | 4 | 7 | 12.5 |
+| Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 16 | 1 | 3 | 17.5 |
+
+All Morstilia games ended in checkmate. 15 of the MaiEngine games were MaiEngine time forfeits. inphish lost no game on time and made no illegal move. The ladder fit over the two rungs is 3264 ± 123 at 1+0.01, against 3149 ± 102 for 4.0.0 over three; 3190 is Stockfish's highest `UCI_Elo`, so the estimate leans on the top rung. The win, draw and loss model was refitted to 4,674 evaluations from 40 self-play games of `18dbaeb` on the random openings, 27 of them drawn; the earlier fits had been held at the edge of the search grid, which is now wider.
 
 ## Optional SPRT
 

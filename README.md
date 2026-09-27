@@ -57,7 +57,7 @@ No rating-list Elo has been measured. Each release is placed on Stockfish 19's `
 
 ![Elo per release on Stockfish 19's UCI_Elo scale at 1+0.01](docs/images/progress.jpg)
 
-The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, and 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even against Stockfish at its highest setting, 3190, so its figure rests on the top of the scale and is the least certain. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, and 4.0.0 scored 32 of 40 against 3.1.2.
+The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search, and 5.0.0, which moved to Stockfish 19's network with threat and pawn-pair inputs. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even and 5.0.0 12.5 of 20 against Stockfish at its highest setting, 3190, so their figures rest on the top of the scale and are the least certain. Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, 4.0.0 scored 32 of 40 against 3.1.2, and 5.0.0 23 of 40 against 4.0.0, although it searches about half as many nodes per second.
 
 ![Match results against Stockfish 19, Morstilia V6 and MaiEngine](docs/images/results.jpg)
 
@@ -77,11 +77,12 @@ Compare versions within one column only. Match scores are wins / losses / draws 
 | [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) |
 | [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
 | [inphish v4.0.0](https://github.com/imInph/inphish/releases/tag/v4.0.0) | 3149 ± 102 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
+| [inphish v5.0.0](https://github.com/imInph/inphish/releases/tag/v5.0.0) | 3264 ± 123 | | 20 / 0 / 0 | 20 / 0 / 0 (4) |
 
 1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
 2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
 3. At 10+0.1. At 1+0.01 it scored 19 / 0 / 1 against Morstilia and 20 / 0 / 0 against MaiEngine, 18 of them MaiEngine time forfeits.
-4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15, 12 and 11 games for 1.0.0, 2.0.0, 3.0.0, 3.1.0 and 4.0.0), so they say little about playing strength. inphish lost no game on time.
+4. At 1+0.01 MaiEngine lost many of these on time (16, 17, 15, 12, 11 and 15 games for 1.0.0, 2.0.0, 3.0.0, 3.1.0, 4.0.0 and 5.0.0), so they say little about playing strength. inphish lost no game on time.
 5. Not placed on the ladder separately; it scored 21.5 and 19.5 of 40 against 3.0.0, where few games reach five pieces.
 
 </details>
@@ -128,7 +129,7 @@ Correctness tests and their reference data are described in [docs/TESTING.md](do
 
 ## Limitations
 
-inphish has no opening book or pondering and no evaluation network of its own. Tablebase support covers WDL and DTZ tables; on Windows each table file used is read into memory rather than mapped. [docs/ROADMAP.md](docs/ROADMAP.md) lists what was and was not built against the original plan.
+inphish has no pondering beyond the UCI plumbing and no evaluation network or opening book statistics of its own: the network is Stockfish's and the book is built from Lichess games. Tablebase support covers WDL and DTZ tables; on Windows each table file used is read into memory rather than mapped. [docs/ROADMAP.md](docs/ROADMAP.md) lists what was and was not built against the original plan.
 
 ## Acknowledgements
 
