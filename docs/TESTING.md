@@ -58,7 +58,7 @@ MATCH_OPPONENT_OPTIONS="option.Hash=16 option.Threads=1 option.BookEnabled=false
 tools/match.sh main Morstilia-6 /path/to/morstilia
 ```
 
-It defaults to 20 games at 1+0.01 with two concurrent games and always stops at 20 minutes of wall clock. It refuses a slower control, more than 40 games, or more concurrency unless `MATCH_OWNER_APPROVED=yes` records a specific owner approval. The PGN, log, bench line, and frozen binary go to `~/inphish-evidence/`, outside the repository. The script prints the score and a count of game terminations. An earlier revision can be the opponent by passing its frozen binary as the opponent command.
+It defaults to 20 games at 1+0.01 with two concurrent games and always stops at 20 minutes of wall clock. It refuses a slower control, more than 40 games, or more concurrency unless `MATCH_OWNER_APPROVED=yes` records a specific owner approval. The PGN, log, bench line, and frozen binary go to an `inphish-evidence/` directory beside the repository, or to `MATCH_EVIDENCE` when set. The script prints the score and a count of game terminations. An earlier revision can be the opponent by passing its frozen binary as the opponent command.
 
 `tests/openings/chess960.epd` holds ten Chess960 starting layouts, every 96th from `tests/perft/chess960_starts.txt` starting at index 5. `MATCH_VARIANT=fischerandom` with `MATCH_OPENINGS` pointing at that file plays them as Chess960; fastchess then turns on `UCI_Chess960` for both engines. Morstilia 6.0.0 and MaiEngine do not offer Chess960, so Chess960 games are played against Stockfish or earlier revisions.
 
@@ -87,7 +87,7 @@ Longer matches and formal SPRTs are optional when a specific strength question w
 
 ## Win, draw and loss estimates
 
-`UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((340 - cp) / 236))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ~/inphish-evidence nnue-selfplay` fitted the two constants by maximum likelihood to 4,962 evaluations from 40 games of the network build (`4d6d3cc`) against itself at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 191 wins, 617 draws and 191 losses per thousand. Forty games is a small basis and it describes fast self-play, so the figures are a rough guide. The hand-written evaluation of 2.0 had its own fit, 132 and 152 from about 300 games.
+`UCI_ShowWDL` reports win, draw and loss chances from a logistic model of the score, `win = 1 / (1 + exp((340 - cp) / 236))` with the loss chance mirrored and the draw chance the remainder. `tools/wdl_fit.py ../inphish-evidence nnue-selfplay` fitted the two constants by maximum likelihood to 4,962 evaluations from 40 games of the network build (`4d6d3cc`) against itself at 1+0.01, skipping the first 16 plies, mate scores and scores beyond 12 pawns. At an even score it gives 191 wins, 617 draws and 191 losses per thousand. Forty games is a small basis and it describes fast self-play, so the figures are a rough guide. The hand-written evaluation of 2.0 had its own fit, 132 and 152 from about 300 games.
 
 ## Search changes after 1.0.0
 

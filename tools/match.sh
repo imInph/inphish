@@ -14,7 +14,6 @@ fastchess=${MATCH_FASTCHESS:-fastchess}
 time_control=${MATCH_TC:-1+0.01}
 rounds=${MATCH_ROUNDS:-10}
 concurrency=${MATCH_CONCURRENCY:-2}
-evidence=${MATCH_EVIDENCE:-$HOME/inphish-evidence}
 read -r -a opponent_options <<< "${MATCH_OPPONENT_OPTIONS:-}"
 read -r -a engine_options <<< "${MATCH_ENGINE_OPTIONS:-}"
 variant=${MATCH_VARIANT:-standard}
@@ -23,6 +22,7 @@ variant=${MATCH_VARIANT:-standard}
 wall_clock_seconds=1200
 
 repo_root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+evidence=${MATCH_EVIDENCE:-$(dirname "$repo_root")/inphish-evidence}
 openings=${MATCH_OPENINGS:-$repo_root/tests/openings/balanced.epd}
 
 if [[ $time_control != 1+0.01 || $rounds -gt 20 || $concurrency -gt 2 ]] \
