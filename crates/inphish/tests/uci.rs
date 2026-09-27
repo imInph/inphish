@@ -374,3 +374,72 @@ fn uci_syzygy_path() {
     engine.send("quit");
     assert!(engine.child.wait().unwrap().success());
 }
+
+#[test]
+fn uci_own_book() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name OwnBook"),
+        "option name OwnBook type check default false"
+    );
+    assert_eq!(
+        engine.until("option name BookFile"),
+        "option name BookFile type string default <empty>"
+    );
+    assert_eq!(
+        engine.until("option name Book Depth"),
+        "option name Book Depth type spin default 40 min 1 max 200"
+    );
+    assert_eq!(
+        engine.until("option name Book Best Move"),
+        "option name Book Best Move type check default false"
+    );
+    engine.until("uciok");
+    // Off by default: the engine searches.
+    engine.send("position startpos");
+    engine.send("go depth 1");
+    engine.until("info depth 1");
+    engine.until("bestmove ");
+    // The bundled book answers at once.
+    engine.send("setoption name OwnBook value true");
+    engine.send("setoption name Book Best Move value true");
+    engine.send("go wtime 60000 btime 60000");
+    let book = engine.until("info string book move ");
+    let best = engine.until("bestmove ");
+    assert_eq!(
+        book["info string book move ".len()..],
+        best["bestmove ".len()..]
+    );
+    // Analysis and positions past the book depth search instead.
+    engine.send("go depth 1 infinite");
+    engine.until("info depth 1");
+    engine.send("stop");
+    engine.until("bestmove ");
+    engine.send("setoption name Book Depth value 1");
+    engine.send("position startpos moves e2e4");
+    engine.send("go depth 1");
+    engine.until("info depth 1");
+    engine.until("bestmove ");
+    // A book file of one entry: 1. Nf3 from the start.
+    let path = std::env::temp_dir().join(format!("inphish-book-{}.bin", std::process::id()));
+    let mut entry = 0x463b_9618_1691_fc9c_u64.to_be_bytes().to_vec();
+    entry.extend(((6_u16 << 6) | 21).to_be_bytes());
+    entry.extend([0, 1, 0, 0, 0, 0]);
+    std::fs::write(&path, entry).unwrap();
+    engine.send(&format!("setoption name BookFile value {}", path.display()));
+    assert_eq!(
+        engine.until("info string"),
+        "info string loaded book with 1 entries"
+    );
+    engine.send("position startpos");
+    engine.send("go wtime 60000 btime 60000");
+    assert_eq!(engine.until("bestmove "), "bestmove g1f3");
+    std::fs::remove_file(&path).unwrap();
+    engine.send("setoption name BookFile value /nonexistent/book.bin");
+    assert!(engine
+        .until("info string")
+        .starts_with("info string book not loaded"));
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+}

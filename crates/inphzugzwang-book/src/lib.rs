@@ -4,6 +4,9 @@
 
 mod random;
 
+use std::borrow::Cow;
+use std::sync::OnceLock;
+
 use inphzugzwang_core::{pawn_attacks, Color, Move, PieceType, Position, Square};
 
 use random::RANDOM;
@@ -60,14 +63,24 @@ pub fn key(position: &Position) -> u64 {
     key
 }
 
+/// inphish's own book, bundled in the binary.
+const BUILT_IN: &[u8] = include_bytes!("../book/inphish.bin");
+
 /// A Polyglot book held in memory.
 pub struct Book {
-    bytes: Vec<u8>,
+    bytes: Cow<'static, [u8]>,
+}
+
+/// The bundled book, checked on first use.
+pub fn built_in() -> &'static Book {
+    static BOOK: OnceLock<Book> = OnceLock::new();
+    BOOK.get_or_init(|| Book::new(BUILT_IN).expect("bundled book is valid"))
 }
 
 impl Book {
     /// Takes the contents of a book file, which must be whole entries sorted by key.
-    pub fn new(bytes: Vec<u8>) -> Result<Self, &'static str> {
+    pub fn new(bytes: impl Into<Cow<'static, [u8]>>) -> Result<Self, &'static str> {
+        let bytes = bytes.into();
         if !bytes.len().is_multiple_of(ENTRY) {
             return Err("book size is not a whole number of entries");
         }

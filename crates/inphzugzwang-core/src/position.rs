@@ -327,6 +327,11 @@ impl Position {
         self.state.castling
     }
 
+    /// Plies played since the start of the game, from the FEN full-move number.
+    pub fn game_ply(&self) -> u32 {
+        2 * (self.state.fullmove - 1) + u32::from(self.state.side == Color::Black)
+    }
+
     /// The square behind a pawn that has just moved two squares, whether or not any pawn
     /// can capture there.
     pub fn en_passant(&self) -> Option<Square> {

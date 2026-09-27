@@ -20,7 +20,8 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 ![Search, evaluation, endgames, parallel search, Chess960 and UCI features](docs/images/features.jpg)
 
 - **Search:** iterative deepening, principal variation search, a transposition table, null-move, futility, static-exchange and history pruning, ProbCut, late move reductions, internal iterative reductions, killer, history, counter-move and static-exchange move ordering, and quiescence search.
-- **Evaluation:** since 5.0.0, Stockfish 19's NNUE network `nn-1a298aa575a0` (piece-square, threat and pawn-pair inputs, 1024x2 with eight layer stacks, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 19's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. It makes the binary about 100 MB. 4.x used Stockfish 15.1's `nn-ad9b42354671` and 3.x Stockfish 13's `nn-62ef826d1a6d`.
+- **Evaluation:** since 5.0.0, Stockfish 19's NNUE network `nn-1a298aa575a0` (piece-square, threat and pawn-pair inputs, 1024x2 with eight layer stacks, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 19's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. It adds about 100 MB to the binary. 4.x used Stockfish 15.1's `nn-ad9b42354671` and 3.x Stockfish 13's `nn-62ef826d1a6d`.
+- **Opening book:** since 5.0.0, a bundled Polyglot book of 6.4 million entries built from Lichess games between players rated 2000 and above (CC0), covering up to the first 40 plies. It is off by default; `OwnBook` turns it on, and `BookFile` loads any Polyglot book instead. With the network, the book brings the binary to about 200 MB. How it was built is recorded in [`crates/inphzugzwang-book/book/README.md`](crates/inphzugzwang-book/book/README.md).
 - **Endgames:** Syzygy WDL and DTZ probing. The tables are not included; download them separately, for example the 3-5 piece set of about 1 GB.
 - **Chess960:** with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook. Standard chess is the default.
 
@@ -43,6 +44,10 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 | `UCI_ShowWDL` | false | Adds win/draw/loss estimates to `info` output |
 | `UCI_Chess960` | false | Chess960 castling and FEN handling |
 | `SyzygyPath` | empty | One or more table directories, separated by `:` (`;` on Windows) |
+| `OwnBook` | false | Plays opening book moves in standard chess; not in analysis, pondering, `searchmoves` or `MultiPV` above 1 |
+| `BookFile` | empty | A Polyglot book to use instead of the bundled one |
+| `Book Depth` | 40 | Plies from the start of the game within which the book is used, 1 to 200 |
+| `Book Best Move` | false | Always plays the book's heaviest move instead of choosing by weight |
 
 </details>
 

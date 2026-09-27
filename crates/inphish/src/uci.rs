@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use inphzugzwang_core::{Color, Position};
+use inphzugzwang_book::{built_in, Book};
+use inphzugzwang_core::{Color, Move, Position};
 use inphzugzwang_search::{
     search_with_table, uci_score, wdl, Control, Info, Limits, TranspositionTable, STRENGTH_MAX,
     STRENGTH_MIN,
@@ -46,6 +47,12 @@ struct Engine {
     tablebases: Option<Arc<Tablebases>>,
     chess960: bool,
     debug: bool,
+    own_book: bool,
+    /// A book loaded through `BookFile`; without one the bundled book is used.
+    book_file: Option<Arc<Book>>,
+    book_depth: u32,
+    book_best: bool,
+    book_random: u64,
 }
 
 pub fn run() -> io::Result<()> {
@@ -83,6 +90,14 @@ pub fn run() -> io::Result<()> {
         tablebases: None,
         chess960: false,
         debug: false,
+        own_book: false,
+        book_file: None,
+        book_depth: 40,
+        book_best: false,
+        book_random: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(1, |elapsed| elapsed.as_nanos() as u64)
+            | 1,
     };
     let mut output = io::stdout().lock();
     while let Ok(event) = rx.recv() {
@@ -169,6 +184,13 @@ impl Engine {
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "option name SyzygyPath type string default <empty>")?;
+                write_line(out, "option name OwnBook type check default false")?;
+                write_line(out, "option name BookFile type string default <empty>")?;
+                write_line(
+                    out,
+                    "option name Book Depth type spin default 40 min 1 max 200",
+                )?;
+                write_line(out, "option name Book Best Move type check default false")?;
                 write_line(out, "uciok")?;
             }
             "isready" => write_line(out, "readyok")?,
@@ -194,6 +216,10 @@ impl Engine {
                 if self.active.is_some() {
                     self.stop();
                     self.pending = Some(limits);
+                } else if let Some(mv) = self.book_move(&limits) {
+                    let text = self.position.format_move(mv, false);
+                    write_line(out, &format!("info string book move {text}"))?;
+                    write_line(out, &format!("bestmove {text}"))?;
                 } else {
                     self.start(limits, tx, out)?;
                 }
@@ -298,6 +324,26 @@ impl Engine {
         Ok(())
     }
 
+    /// A move from the opening book, when `OwnBook` is on, the game is still within the
+    /// book depth, and the search is an ordinary one for a single line of standard chess.
+    fn book_move(&mut self, limits: &Limits) -> Option<Move> {
+        if !self.own_book
+            || self.chess960
+            || limits.infinite
+            || limits.ponder
+            || limits.searchmoves_only
+            || self.multipv > 1
+            || self.position.game_ply() >= self.book_depth
+        {
+            return None;
+        }
+        self.book_random ^= self.book_random << 13;
+        self.book_random ^= self.book_random >> 7;
+        self.book_random ^= self.book_random << 17;
+        let book = self.book_file.as_deref().unwrap_or_else(|| built_in());
+        book.choose(&self.position, self.book_best, self.book_random)
+    }
+
     fn stop(&self) {
         if let Some(active) = &self.active {
             active.control.stop.store(true, Ordering::Relaxed);
@@ -360,6 +406,35 @@ impl Engine {
             let message = format!("info string found {} tablebases", tables.len());
             self.tablebases = (!tables.is_empty()).then(|| Arc::new(tables));
             return Some(message);
+        } else if name == "ownbook" {
+            if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
+                self.own_book = enabled;
+            }
+        } else if name == "bookfile" {
+            let path = value_at.map_or(String::new(), |index| words[index + 1..].join(" "));
+            if path.is_empty() || path == "<empty>" {
+                self.book_file = None;
+                return None;
+            }
+            let loaded = std::fs::read(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| Book::new(bytes).map_err(str::to_owned));
+            return Some(match loaded {
+                Ok(book) => {
+                    let message = format!("info string loaded book with {} entries", book.len());
+                    self.book_file = Some(Arc::new(book));
+                    message
+                }
+                Err(error) => format!("info string book not loaded: {error}"),
+            });
+        } else if name == "book depth" {
+            if let Ok(plies) = value.parse::<u32>() {
+                self.book_depth = plies.clamp(1, 200);
+            }
+        } else if name == "book best move" {
+            if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
+                self.book_best = enabled;
+            }
         } else if name == "uci_chess960" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.chess960 = enabled;

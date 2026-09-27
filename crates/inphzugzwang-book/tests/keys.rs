@@ -90,7 +90,12 @@ fn finds_weighted_moves_and_castling() {
         (key(&castle), e1h1, 1),
     ];
     rows.sort_by_key(|&(key, _, _)| key);
-    let book = Book::new(rows.iter().flat_map(|&(k, m, w)| entry(k, m, w)).collect()).unwrap();
+    let book = Book::new(
+        rows.iter()
+            .flat_map(|&(k, m, w)| entry(k, m, w))
+            .collect::<Vec<u8>>(),
+    )
+    .unwrap();
     let moves: Vec<String> = book
         .moves(&start)
         .iter()
