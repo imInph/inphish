@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use inphzugzwang_core::{Move, MoveList, PieceType, Position};
 use inphzugzwang_eval::VALUES;
-use inphzugzwang_nnue::{network, non_pawn_material, Accumulator, RefreshCache};
+use inphzugzwang_nnue::{network, Accumulator, RefreshCache};
 use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
 mod tt;
@@ -594,19 +594,14 @@ impl<'a> Search<'a> {
         self.accumulators[ply + 1] = self.accumulators[ply].clone();
     }
 
-    /// Static evaluation in centipawns for the side to move: the network's adjusted
-    /// output scaled by remaining material and damped by the fifty-move counter as
-    /// Stockfish 15.1 does without its optimism term, then converted at 208 internal
-    /// units per pawn.
+    /// Static evaluation in centipawns for the side to move: Stockfish 19's evaluation
+    /// without its optimism term, converted at 208 internal units per pawn.
     fn static_evaluation(&self, ply: usize) -> i32 {
         let position = &self.position;
-        let material = non_pawn_material(position);
-        let nnue = network()
+        let value = network()
             .evaluate(&self.accumulators[ply], position)
-            .adjusted(material);
-        let scaled = nnue * (1064 + 106 * material / 5120) / 1024;
-        let damped = scaled * (195 - i32::from(position.halfmove_clock())) / 211;
-        (damped * 100 / 208).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+            .evaluation(position);
+        (value * 100 / 208).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
     fn root_moves(&self) -> Vec<Move> {

@@ -20,7 +20,7 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 ![Search, evaluation, endgames, parallel search, Chess960 and UCI features](docs/images/features.jpg)
 
 - **Search:** iterative deepening, principal variation search, a transposition table, null-move, futility, static-exchange and history pruning, ProbCut, late move reductions, internal iterative reductions, killer, history, counter-move and static-exchange move ordering, and quiescence search.
-- **Evaluation:** since 4.0.0, Stockfish 15.1's NNUE network `nn-ad9b42354671` (HalfKAv2_hm, 1024x2 with eight layer stacks, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 15.1's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. It makes the binary about 48 MB. 3.x used Stockfish 13's smaller `nn-62ef826d1a6d`.
+- **Evaluation:** since 5.0.0, Stockfish 19's NNUE network `nn-1a298aa575a0` (piece-square, threat and pawn-pair inputs, 1024x2 with eight layer stacks, GPL-3.0), bundled in the binary and run by inphish's own inference code, which matches Stockfish 19's output exactly. The evaluation is therefore Stockfish's network, not one of inphish's own. It makes the binary about 100 MB. 4.x used Stockfish 15.1's `nn-ad9b42354671` and 3.x Stockfish 13's `nn-62ef826d1a6d`.
 - **Endgames:** Syzygy WDL and DTZ probing. The tables are not included; download them separately, for example the 3-5 piece set of about 1 GB.
 - **Chess960:** with `UCI_Chess960` on, the engine accepts X-FEN and Shredder-FEN castling rights and reads and writes castling as the king capturing its own rook. Standard chess is the default.
 
@@ -113,7 +113,7 @@ target/release/inphish bench
 target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
 ```
 
-`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, `eval` prints the hand-written evaluation, which play no longer uses since 4.0.0, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `66999` nodes.
+`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, `eval` prints the hand-written evaluation, which play no longer uses since 4.0.0, and `bench` searches 50 fixed positions at depth 4. The command-line FEN must be quoted as one argument. The depth-4 bench signature is `74474` nodes.
 
 </details>
 
@@ -127,7 +127,7 @@ inphish has no opening book or pondering and no evaluation network of its own. T
 
 ## Acknowledgements
 
-The Chess Programming Wiki documents most of the techniques used here. The piece-square tables are Ronald Friederich's PeSTO tables as published on the wiki. The evaluation network `nn-ad9b42354671` and the HalfKAv2_hm architecture it uses, like the `nn-62ef826d1a6d` HalfKP network of 3.x, come from the [Stockfish](https://github.com/official-stockfish/Stockfish) project and its contributors, and are distributed under the GPL-3.0. The Syzygy probing code is ported from Stockfish 13's `tbprobe`, itself based on Ronald de Man's Syzygy tablebase code.
+The Chess Programming Wiki documents most of the techniques used here. The piece-square tables are Ronald Friederich's PeSTO tables as published on the wiki. The evaluation network `nn-1a298aa575a0` and the architecture it uses, like the `nn-ad9b42354671` network of 4.x and the `nn-62ef826d1a6d` HalfKP network of 3.x, come from the [Stockfish](https://github.com/official-stockfish/Stockfish) project and its contributors, and are distributed under the GPL-3.0. The Syzygy probing code is ported from Stockfish 13's `tbprobe`, itself based on Ronald de Man's Syzygy tablebase code.
 
 ## License
 

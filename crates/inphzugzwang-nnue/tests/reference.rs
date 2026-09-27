@@ -1,27 +1,32 @@
 use inphzugzwang_core::Position;
-use inphzugzwang_nnue::{delta, network, non_pawn_material, Accumulator, Network, RefreshCache};
+use inphzugzwang_nnue::{delta, network, Accumulator, Network, RefreshCache};
 
 const REFERENCE: &str = include_str!("../../../tests/nnue/reference.txt");
 
 #[test]
-fn matches_stockfish_15_1_exactly() {
+fn matches_stockfish_19_exactly() {
     let network = network();
     let mut count = 0;
     for line in REFERENCE.lines().filter(|line| !line.starts_with('#')) {
-        let mut fields = line.split('|');
-        let (fen, raw, adjusted) = (
-            fields.next().expect(line),
-            fields.next().expect(line),
-            fields.next().expect(line),
-        );
+        let fields: Vec<&str> = line.split('|').collect();
+        let [fen, psqt, positional, evaluation] = fields[..] else {
+            panic!("{line}");
+        };
         let position = Position::from_fen(fen).expect(fen);
         let output = network.evaluate_position(&position);
-        assert_eq!(output.raw(), raw.parse::<i32>().unwrap(), "{fen}");
+        assert_eq!(output.psqt, psqt.parse::<i32>().unwrap(), "{fen}");
         assert_eq!(
-            output.adjusted(non_pawn_material(&position)),
-            adjusted.parse::<i32>().unwrap(),
+            output.positional,
+            positional.parse::<i32>().unwrap(),
             "{fen}"
         );
+        if evaluation != "-" {
+            assert_eq!(
+                output.evaluation(&position),
+                evaluation.parse::<i32>().unwrap(),
+                "{fen}"
+            );
+        }
         count += 1;
     }
     assert!(count > 2000);
@@ -29,7 +34,7 @@ fn matches_stockfish_15_1_exactly() {
 
 #[test]
 fn rejects_damaged_files() {
-    let bytes = include_bytes!("../net/nn-ad9b42354671.nnue");
+    let bytes = include_bytes!("../net/nn-1a298aa575a0.nnue");
     assert!(Network::parse(&bytes[..bytes.len() - 1]).is_err());
     let mut longer = bytes.to_vec();
     longer.push(0);
