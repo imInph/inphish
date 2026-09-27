@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # Fits the win/draw/loss model behind UCI_ShowWDL to inphish self-play PGNs from fastchess.
-# Usage: tools/wdl_fit.py EVIDENCE_DIR [FILE_NAME_PATTERN]
-# The pattern picks the self-play PGNs; by default those between builds with the 15.1 network.
+# Usage: tools/wdl_fit.py EVIDENCE_DIR [FILE_NAME_PATTERN [ENGINE_NAME_PREFIX]]
+# The pattern picks the PGNs; by default the self-play games between builds with the 15.1
+# network. With a name prefix only the evaluations of the engine so named are used, so games
+# against other engines can serve too.
 import glob, math, os, re, sys
 pattern = sys.argv[2] if len(sys.argv) > 2 else r'1254571-vs-dfbfc45|788b3d4-vs-dfbfc45|49416d7-vs-dfbfc45'
+prefix = sys.argv[3] if len(sys.argv) > 3 else None
 files = [f for f in glob.glob(os.path.join(sys.argv[1], '*.pgn')) if re.search(pattern, f)]
 samples = []
 for path in files:
@@ -15,10 +18,13 @@ for path in files:
         if re.search(r'\[Termination "(time forfeit|abandoned|illegal)', game):
             continue
         white = {'1-0': 1, '0-1': -1, '1/2-1/2': 0}[result]
+        names = (re.search(r'\[White "([^"]*)"\]', game).group(1), re.search(r'\[Black "([^"]*)"\]', game).group(1))
         body = game.split('\n\n', 1)[1]
         comments = re.findall(r'\{([+-]?(?:M?\d+(?:\.\d+)?))/\d+', body)
         for ply, value in enumerate(comments):
             if ply < 16 or 'M' in value:
+                continue
+            if prefix is not None and not names[ply % 2].startswith(prefix):
                 continue
             cp = float(value) * 100
             if abs(cp) > 1200:
@@ -36,7 +42,7 @@ def nll(a, b):
         total -= math.log(max(p, 1e-9))
     return total / len(samples)
 
-best = min(((nll(a, b), a, b) for a in range(0, 401, 20) for b in range(20, 401, 20)))
+best = min(((nll(a, b), a, b) for a in range(0, 1001, 20) for b in range(20, 601, 20)))
 _, a0, b0 = best
 best = min(((nll(a, b), a, b) for a in range(max(0, a0 - 20), a0 + 21, 2) for b in range(max(2, b0 - 20), b0 + 21, 2)))
 print('nll %.4f a %d b %d' % best)
