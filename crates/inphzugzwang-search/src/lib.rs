@@ -440,11 +440,27 @@ fn rank_root(
 /// Lines searched when strength is limited, so that a weaker move can be chosen.
 const STRENGTH_LINES: usize = 4;
 
-/// Node budget for a limited strength: 200 nodes at the lowest setting, doubling every
-/// 240 Elo.
+/// Node budgets for limited strength as base-2 logarithms at calibration points, from
+/// matches against Stockfish 19 at the same `UCI_Elo`; settings between two points
+/// interpolate linearly.
+const STRENGTH_CURVE: [(u16, f64); 6] = [
+    (1320, 7.4),
+    (1600, 8.4),
+    (2200, 10.3),
+    (2600, 11.0),
+    (2800, 12.8),
+    (3000, 14.6),
+];
+
 fn strength_nodes(elo: u16) -> u64 {
-    let steps = f64::from(elo.clamp(STRENGTH_MIN, STRENGTH_MAX) - STRENGTH_MIN) / 240.0;
-    (200.0 * steps.exp2()) as u64
+    let elo = elo.clamp(STRENGTH_MIN, STRENGTH_MAX);
+    let segment = STRENGTH_CURVE
+        .windows(2)
+        .find(|pair| elo <= pair[1].0)
+        .expect("the curve spans the setting range");
+    let ((low, low_nodes), (high, high_nodes)) = (segment[0], segment[1]);
+    let share = f64::from(elo - low) / f64::from(high - low);
+    (low_nodes + share * (high_nodes - low_nodes)).exp2() as u64
 }
 
 pub const STRENGTH_MIN: u16 = 1320;
