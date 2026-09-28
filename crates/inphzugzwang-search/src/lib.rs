@@ -2,24 +2,32 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use inphzugzwang_core::{Move, MoveList, PieceType, Position};
-use inphzugzwang_eval::VALUES;
+use inphzugzwang_core::{Move, Position};
 use inphzugzwang_nnue::{network, Accumulator, RefreshCache};
 use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
+mod history;
+mod picker;
 mod tt;
 
+use history::{continuation_table, piece_square, Histories, SENTINEL};
+use picker::{is_capture, moved_square, victim, victim_slot, Picker};
 pub use tt::TranspositionTable;
-use tt::{Bound, Record};
+use tt::{Bound, Record, DEPTH_NONE};
 
 const MAX_PLY: usize = 128;
+const MAX_MOVES: usize = 256;
 const MATE: i32 = 30_000;
 const INF: i32 = 32_000;
+/// Marks a missing score or evaluation; outside every real score.
+const VALUE_NONE: i32 = 32_001;
 const MATE_BOUND: i32 = MATE - MAX_PLY as i32;
 /// Score of a tablebase win, just below the mate range so it is never shown as a mate.
 const TB_WIN: i32 = MATE_BOUND - 1;
-const HISTORY_MAX: i32 = 16_384;
-const PIECE_SQUARES: usize = 12 * 64;
+/// Lowest tablebase win score; evaluations stay below it.
+const TB_WIN_IN_MAX_PLY: i32 = MATE_BOUND - MAX_PLY as i32;
+/// Stockfish's `VALUE_KNOWN_WIN` in centipawns.
+const KNOWN_WIN: i32 = v(10_000);
 const CORRECTION_ENTRIES: usize = 16_384;
 const CORRECTION_GRAIN: i32 = 256;
 const CORRECTION_MAX: i32 = 64 * CORRECTION_GRAIN;
@@ -81,19 +89,22 @@ struct Search<'a> {
     tbhits: u64,
     seldepth: usize,
     aborted: bool,
-    killers: [[Move; 2]; MAX_PLY],
-    history: Box<[[[i32; 64]; 64]; 2]>,
-    continuation: Box<[i32]>,
-    counters: Box<[Move]>,
+    histories: Histories,
     correction: Box<[[i32; CORRECTION_ENTRIES]; 2]>,
-    played: [Option<usize>; MAX_PLY],
-    reductions: [[u8; 64]; 64],
+    stack: Box<[Frame]>,
+    /// Late move reduction factors by depth or move number, as in Stockfish.
+    reductions: Box<[i32]>,
+    root_depth: i32,
+    completed_depth: i32,
+    /// Width of the root window, which scales reductions.
+    root_delta: i32,
+    /// Ply below which null moves stay off for `nmp_side` during a verification search.
+    nmp_min_ply: usize,
+    nmp_side: usize,
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
     accumulators: Box<[Accumulator]>,
     refresh_cache: RefreshCache,
-    /// One move list per ply, reused so that no node initialises or copies a fresh one.
-    lists: Box<[MoveList]>,
 }
 
 pub fn search(
@@ -228,43 +239,15 @@ fn search_main(
         .depth
         .unwrap_or((MAX_PLY - 1) as u8)
         .min((MAX_PLY - 1) as u8);
+    let mut ordered = candidates.clone();
     for depth in 1..=max_depth {
         if worker.should_stop() {
             break;
         }
         let iteration_start_nodes = worker.nodes;
-        let mut ordered = candidates.clone();
-        ordered.sort_by_key(|&mv| -worker.move_score(mv, best, 0));
-        // Aspiration: search a narrow window around the last score and widen it on a fail,
-        // since most iterations land close to the previous one and a narrow window prunes more.
-        let mut delta = 25;
-        let (mut low, mut high) =
-            if depth >= 5 && completed.depth > 0 && completed.score.abs() < MATE_BOUND {
-                (completed.score - delta, completed.score + delta)
-            } else {
-                (-INF, INF)
-            };
-        let (best_score, iteration_best, best_move_nodes) = loop {
-            let (score, mv, nodes) = worker.search_root(depth, &ordered, low, high);
-            if worker.aborted {
-                break (score, mv, nodes);
-            }
-            if score <= low && low > -INF {
-                high = (low + high) / 2;
-                low = score - delta;
-            } else if score >= high && high < INF {
-                high = score + delta;
-            } else {
-                break (score, mv, nodes);
-            }
-            delta *= 2;
-            if delta > 400 {
-                low = -INF;
-                high = INF;
-            }
-            low = low.max(-INF);
-            high = high.min(INF);
-        };
+        let previous = (completed.depth > 0).then_some(completed.score);
+        let (best_score, iteration_best, best_move_nodes) =
+            worker.aspiration(depth, &mut ordered, previous);
         if worker.aborted || best_score == -INF {
             break;
         }
@@ -275,6 +258,7 @@ fn search_main(
             0
         };
         best = iteration_best.or(best);
+        worker.completed_depth = i32::from(depth);
         completed = Info {
             depth,
             seldepth: worker.seldepth,
@@ -492,6 +476,114 @@ fn weakened_choice(lines: &[Info], elo: u16, seed: u64) -> usize {
     chosen
 }
 
+/// Converts a margin in Stockfish's internal units, 208 to a pawn, to centipawns, the
+/// unit of this search.
+const fn v(internal: i32) -> i32 {
+    internal * 100 / 208
+}
+
+fn futility_margin(depth: i32, improving: bool) -> i32 {
+    v(165 * (depth - i32::from(improving)))
+}
+
+fn futility_move_count(improving: bool, depth: i32) -> i32 {
+    if improving {
+        3 + depth * depth
+    } else {
+        (3 + depth * depth) / 2
+    }
+}
+
+fn stat_bonus(depth: i32) -> i32 {
+    ((12 * depth + 282) * depth - 349).min(1594)
+}
+
+/// Stockfish's endgame piece values, for futility margins.
+const ENDGAME: [i32; 6] = [208, 854, 915, 1380, 2682, 0];
+
+/// A mate or tablebase score is stored relative to the node rather than the root.
+fn value_to_tt(value: i32, ply: usize) -> i32 {
+    if value >= TB_WIN_IN_MAX_PLY {
+        value + ply as i32
+    } else if value <= -TB_WIN_IN_MAX_PLY {
+        value - ply as i32
+    } else {
+        value
+    }
+}
+
+/// The inverse of `value_to_tt`. A stored mate that the fifty-move counter may no longer
+/// allow comes back as the best tablebase score instead, as in Stockfish.
+fn value_from_tt(value: i32, ply: usize, rule50: i32) -> i32 {
+    if value == VALUE_NONE {
+        VALUE_NONE
+    } else if value >= TB_WIN_IN_MAX_PLY {
+        if value >= MATE_BOUND && MATE - value > 99 - rule50 {
+            MATE_BOUND - 1
+        } else {
+            value - ply as i32
+        }
+    } else if value <= -TB_WIN_IN_MAX_PLY {
+        if value <= -MATE_BOUND && MATE + value > 99 - rule50 {
+            -MATE_BOUND + 1
+        } else {
+            value + ply as i32
+        }
+    } else {
+        value
+    }
+}
+
+/// Key of a node searched without one move, kept apart from the node's own results.
+fn excluded_key(key: u64, excluded: Move) -> u64 {
+    key ^ u64::from(excluded.raw()).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// Per-ply search state, read up to six plies back.
+#[derive(Clone, Copy)]
+struct Frame {
+    /// Move played from this ply, null when none or a null move.
+    mv: Move,
+    null: bool,
+    captured: bool,
+    /// Continuation table of replies to `mv`.
+    continuation: usize,
+    static_eval: i32,
+    killers: [Move; 2],
+    move_count: i32,
+    in_check: bool,
+    tt_pv: bool,
+    tt_hit: bool,
+    excluded: Move,
+    stat_score: i32,
+    double_extensions: i32,
+    cutoff_count: i32,
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Self {
+            mv: Move::NULL,
+            null: false,
+            captured: false,
+            continuation: SENTINEL,
+            static_eval: VALUE_NONE,
+            killers: [Move::NULL; 2],
+            move_count: 0,
+            in_check: false,
+            tt_pv: false,
+            tt_hit: false,
+            excluded: Move::NULL,
+            stat_score: 0,
+            double_extensions: 0,
+            cutoff_count: 0,
+        }
+    }
+}
+
+/// Frames before the root, so that looking six plies back never leaves the stack.
+const FRAME_OFFSET: usize = 8;
+
 impl<'a> Search<'a> {
     fn new(
         position: Position,
@@ -503,6 +595,16 @@ impl<'a> Search<'a> {
         let started = limits.started.unwrap_or_else(Instant::now);
         let mut accumulators = vec![Accumulator::default(); MAX_PLY + 1].into_boxed_slice();
         accumulators[0] = network().fresh(&position);
+        let threads = limits.threads.max(1) as f64;
+        let reductions = (0..MAX_MOVES)
+            .map(|index| {
+                if index == 0 {
+                    0
+                } else {
+                    ((20.26 + threads.ln() / 2.0) * (index as f64).ln()) as i32
+                }
+            })
+            .collect();
         Search {
             position,
             timed_started: if limits.ponder { None } else { Some(started) },
@@ -515,37 +617,37 @@ impl<'a> Search<'a> {
             tbhits: 0,
             seldepth: 0,
             aborted: false,
-            killers: [[Move::NULL; 2]; MAX_PLY],
-            history: Box::new([[[0; 64]; 64]; 2]),
-            continuation: vec![0; PIECE_SQUARES * PIECE_SQUARES].into_boxed_slice(),
-            counters: vec![Move::NULL; PIECE_SQUARES].into_boxed_slice(),
+            histories: Histories::new(),
             correction: vec![[0; CORRECTION_ENTRIES]; 2]
                 .into_boxed_slice()
                 .try_into()
                 .expect("two sides"),
-            played: [None; MAX_PLY],
-            reductions: reduction_table(),
+            stack: vec![Frame::default(); MAX_PLY + FRAME_OFFSET + 4].into_boxed_slice(),
+            reductions,
+            root_depth: 0,
+            completed_depth: 0,
+            root_delta: 1,
+            nmp_min_ply: 0,
+            nmp_side: 0,
             pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
             pv_len: [0; MAX_PLY],
             accumulators,
             refresh_cache: RefreshCache::new(),
-            lists: (0..=MAX_PLY).map(|_| MoveList::new()).collect(),
         }
     }
 
+    fn at(&self, ply: usize, back: usize) -> &Frame {
+        &self.stack[ply + FRAME_OFFSET - back]
+    }
+
+    fn at_mut(&mut self, ply: usize, back: usize) -> &mut Frame {
+        &mut self.stack[ply + FRAME_OFFSET - back]
+    }
+
     /// Probes the WDL tables just after a capture or pawn move, when the position has few
-    /// enough pieces and no castling rights. Returns a score when it decides the node;
-    /// a win or loss under the fifty-move rule counts as a small draw offset, as in
-    /// Stockfish.
-    fn probe_tablebases(
-        &mut self,
-        depth: i32,
-        alpha: i32,
-        beta: i32,
-        ply: usize,
-        key: u64,
-        pv_node: bool,
-    ) -> Option<i32> {
+    /// enough pieces and no castling rights. Returns the score and its bound, a win or
+    /// loss under the fifty-move rule counting as a small draw offset, as in Stockfish.
+    fn probe_tablebases(&mut self, ply: usize) -> Option<(i32, Bound)> {
         let tables = self.limits.tablebases.clone()?;
         if self.position.halfmove_clock() != 0 || !probeable(&self.position, tables.max_pieces()) {
             return None;
@@ -555,44 +657,26 @@ impl<'a> Search<'a> {
             return None;
         }
         self.tbhits += 1;
-        let (score, bound) = if wdl < -1 {
+        Some(if wdl < -1 {
             (-TB_WIN + ply as i32, Bound::Upper)
         } else if wdl > 1 {
             (TB_WIN - ply as i32, Bound::Lower)
         } else {
             (2 * wdl, Bound::Exact)
-        };
-        let decided = match bound {
-            Bound::Exact => true,
-            Bound::Lower => score >= beta,
-            Bound::Upper => score <= alpha,
-        };
-        if !decided {
-            return None;
-        }
-        let eval = if self.position.checkers().0 != 0 {
-            0
-        } else {
-            self.static_evaluation(ply)
-        };
-        self.tt.store(
-            key,
-            ply,
-            Record {
-                mv: Move::NULL,
-                score,
-                eval,
-                depth: (depth + 6).min(MAX_PLY as i32 - 1) as u8,
-                bound,
-                pv: pv_node,
-                age: 0,
-            },
-        );
-        Some(score)
+        })
     }
 
-    /// Makes `mv` from `ply`, deriving the next ply's accumulator from this one.
+    /// Makes `mv` from `ply`, deriving the next ply's accumulator from this one, and
+    /// records it in the ply's frame for the histories of the replies.
     fn make(&mut self, mv: Move, ply: usize) {
+        let in_check = self.at(ply, 0).in_check;
+        let capture = is_capture(mv);
+        let square = moved_square(&self.position, mv);
+        let frame = self.at_mut(ply, 0);
+        frame.mv = mv;
+        frame.null = false;
+        frame.captured = capture;
+        frame.continuation = continuation_table(in_check, capture, square);
         let delta = inphzugzwang_nnue::delta(&self.position, mv);
         self.position.make(mv);
         let (parents, children) = self.accumulators.split_at_mut(ply + 1);
@@ -606,18 +690,24 @@ impl<'a> Search<'a> {
     }
 
     fn make_null(&mut self, ply: usize) {
+        let frame = self.at_mut(ply, 0);
+        frame.mv = Move::NULL;
+        frame.null = true;
+        frame.captured = false;
+        frame.continuation = SENTINEL;
         self.position.make_null();
         self.accumulators[ply + 1] = self.accumulators[ply].clone();
     }
 
     /// Static evaluation in centipawns for the side to move: Stockfish 19's evaluation
-    /// without its optimism term, converted at 208 internal units per pawn.
+    /// without its optimism term, converted at 208 internal units per pawn, and kept
+    /// below the tablebase range.
     fn static_evaluation(&self, ply: usize) -> i32 {
         let position = &self.position;
         let value = network()
             .evaluate(&self.accumulators[ply], position)
             .evaluation(position);
-        (value * 100 / 208).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+        (value * 100 / 208).clamp(-TB_WIN_IN_MAX_PLY + 1, TB_WIN_IN_MAX_PLY - 1)
     }
 
     fn root_moves(&self) -> Vec<Move> {
@@ -632,17 +722,16 @@ impl<'a> Search<'a> {
     /// over different iterations, until the main thread stops it.
     fn help(&mut self, first_depth: u8) {
         let mut ordered = self.root_moves();
-        let mut best = None;
+        let mut previous = None;
         for depth in first_depth..MAX_PLY as u8 {
             if ordered.is_empty() || self.should_stop() {
                 return;
             }
-            ordered.sort_by_key(|&mv| -self.move_score(mv, best, 0));
-            let (_, iteration_best, _) = self.search_root(depth, &ordered, -INF, INF);
+            let (score, _, _) = self.aspiration(depth, &mut ordered, previous);
             if self.aborted {
                 return;
             }
-            best = iteration_best.or(best);
+            previous = Some(score);
         }
     }
 
@@ -676,8 +765,10 @@ impl<'a> Search<'a> {
                 .copied()
                 .filter(|mv| !excluded.contains(mv))
                 .collect();
-            remaining.sort_by_key(|&mv| -self.move_score(mv, previous, 0));
-            let (score, mv, _) = self.search_root(depth, &remaining, -INF, INF);
+            if let Some(position) = remaining.iter().position(|&mv| Some(mv) == previous) {
+                remaining[..=position].rotate_right(1);
+            }
+            let (score, mv, _) = self.search_root(i32::from(depth), &mut remaining, -INF, INF);
             let Some(mv) = mv.filter(|_| !self.aborted && score > -INF) else {
                 return;
             };
@@ -704,54 +795,140 @@ impl<'a> Search<'a> {
         }
     }
 
-    fn search_root(
+    /// One iteration at `depth` in a window around the previous score, widened after
+    /// each fail as in Stockfish; a fail high retries a ply shallower first.
+    fn aspiration(
         &mut self,
         depth: u8,
-        moves: &[Move],
+        ordered: &mut [Move],
+        previous: Option<i32>,
+    ) -> (i32, Option<Move>, u64) {
+        let depth = i32::from(depth);
+        let (mut alpha, mut beta, mut delta) = (-INF, INF, 0);
+        if let Some(previous) = previous.filter(|&score| depth >= 4 && score.abs() < KNOWN_WIN) {
+            let internal = previous * 208 / 100;
+            delta = v(10 + internal * internal / 15_620).max(1);
+            alpha = (previous - delta).max(-INF);
+            beta = (previous + delta).min(INF);
+        }
+        let mut failed_high = 0;
+        loop {
+            let adjusted = (depth - failed_high).max(1);
+            let (score, mv, nodes) = self.search_root(adjusted, ordered, alpha, beta);
+            if self.aborted {
+                return (score, mv, nodes);
+            }
+            if score <= alpha && alpha > -INF {
+                beta = (alpha + beta) / 2;
+                alpha = (score - delta).max(-INF);
+                failed_high = 0;
+            } else if score >= beta && beta < INF {
+                beta = (score + delta).min(INF);
+                failed_high += 1;
+            } else {
+                return (score, mv, nodes);
+            }
+            delta += delta / 4 + 1;
+        }
+    }
+
+    /// Searches the root moves in order. Returns the highest score, the best move and the
+    /// nodes spent on it, and reorders `moves` for the next iteration: moves that raised
+    /// the window by their scores, then the rest in their previous order.
+    fn search_root(
+        &mut self,
+        depth: i32,
+        moves: &mut [Move],
         mut alpha: i32,
         beta: i32,
     ) -> (i32, Option<Move>, u64) {
         self.pv_len[0] = 0;
-        let mut best_score = -INF;
-        let mut iteration_best = None;
-        let mut best_move_nodes = 0;
-        for (index, &mv) in moves.iter().enumerate() {
+        self.root_depth = depth;
+        self.root_delta = (beta - alpha).max(1);
+        let in_check = self.position.checkers().0 != 0;
+        if !in_check && self.at(0, 0).static_eval == VALUE_NONE {
+            self.at_mut(0, 0).static_eval = self.corrected(self.static_evaluation(0));
+        }
+        {
+            let frame = self.at_mut(0, 0);
+            frame.in_check = in_check;
+            frame.tt_pv = true;
+            frame.excluded = Move::NULL;
+            frame.move_count = 0;
+        }
+        self.stack[FRAME_OFFSET + 1].tt_pv = false;
+        self.stack[FRAME_OFFSET + 1].excluded = Move::NULL;
+        self.stack[FRAME_OFFSET + 2].killers = [Move::NULL; 2];
+        self.stack[FRAME_OFFSET + 2].cutoff_count = 0;
+        let side = self.position.side_to_move().index();
+        let mut scores = vec![-INF; moves.len()];
+        let mut highest = -INF;
+        let mut best = None;
+        let mut best_nodes = 0;
+        for index in 0..moves.len() {
             if self.should_stop() {
                 break;
             }
+            let mv = moves[index];
+            let move_count = index as i32 + 1;
+            self.at_mut(0, 0).move_count = move_count;
             let before = self.nodes;
-            self.played[0] = Some(self.piece_square(mv));
+            let capture = is_capture(mv);
+            let square = moved_square(&self.position, mv);
+            let stat_score =
+                2 * self.histories.main(side, mv) + self.continuation_score(0, square) - 4433;
             self.make(mv, 0);
-            let child_depth = depth as i32 - 1;
-            let mut score = if index == 0 {
-                -self.negamax(child_depth, -beta, -alpha, 1, true, false)
+            let new_depth = depth - 1;
+            let mut score;
+            if index == 0 {
+                score = -self.negamax::<true>(new_depth, -beta, -alpha, 1, false);
             } else {
-                -self.negamax(child_depth, -alpha - 1, -alpha, 1, true, true)
-            };
-            if index > 0 && score > alpha && score < beta && !self.aborted {
-                score = -self.negamax(child_depth, -beta, -alpha, 1, true, false);
+                let mut reduced = new_depth;
+                if depth >= 2 && move_count > 2 && !capture {
+                    let mut r = self.reduction(true, depth, move_count, beta - alpha);
+                    r -= 2 + 1 + 11 / (3 + depth);
+                    self.at_mut(0, 0).stat_score = stat_score;
+                    r -= stat_score / (13_628 + 4000 * i32::from(depth > 7 && depth < 19));
+                    reduced = (new_depth - r).clamp(1, new_depth + 1);
+                }
+                score = -self.negamax::<false>(reduced, -alpha - 1, -alpha, 1, true);
+                if score > alpha && reduced < new_depth && !self.aborted {
+                    score = -self.negamax::<false>(new_depth, -alpha - 1, -alpha, 1, true);
+                }
+                if score > alpha && !self.aborted {
+                    score = -self.negamax::<true>(new_depth, -beta, -alpha, 1, false);
+                }
             }
             self.position.unmake();
             if self.aborted {
                 break;
             }
-            if score > best_score {
-                best_score = score;
-                iteration_best = Some(mv);
-                best_move_nodes = self.nodes - before;
+            highest = highest.max(score);
+            if index == 0 || score > alpha {
+                scores[index] = score;
+                best = Some(mv);
+                best_nodes = self.nodes - before;
                 self.pv[0][0] = mv;
                 let child_len = self.pv_len[1].min(MAX_PLY - 1);
-                for index in 0..child_len {
-                    self.pv[0][index + 1] = self.pv[1][index];
+                for step in 0..child_len {
+                    self.pv[0][step + 1] = self.pv[1][step];
                 }
                 self.pv_len[0] = child_len + 1;
             }
-            alpha = alpha.max(score);
-            if alpha >= beta {
-                break;
+            if score > alpha {
+                if score >= beta {
+                    break;
+                }
+                alpha = score;
             }
         }
-        (best_score, iteration_best, best_move_nodes)
+        if !self.aborted {
+            let mut order: Vec<usize> = (0..moves.len()).collect();
+            order.sort_by_key(|&index| std::cmp::Reverse(scores[index]));
+            let reordered: Vec<Move> = order.into_iter().map(|index| moves[index]).collect();
+            moves.copy_from_slice(&reordered);
+        }
+        (highest, best, best_nodes)
     }
 
     fn refresh_ponder(&mut self) {
@@ -810,31 +987,164 @@ impl<'a> Search<'a> {
         }
     }
 
-    fn negamax(
+    /// Draw by repetition, insufficient material or the fifty-move rule, unless the move
+    /// that reached the fiftieth move gave mate.
+    fn is_draw(&self) -> bool {
+        self.position.is_repetition()
+            || self.position.is_insufficient_material()
+            || (self.position.halfmove_clock() >= 100
+                && (self.position.checkers().0 == 0 || !self.position.legal_moves().is_empty()))
+    }
+
+    /// A draw scored one centipawn either side of zero, varying with the node count, so
+    /// that the search does not settle into a repetition it could avoid.
+    fn value_draw(&self) -> i32 {
+        -1 + (self.nodes & 2) as i32
+    }
+
+    fn reduction(&self, improving: bool, depth: i32, move_count: i32, delta: i32) -> i32 {
+        let product = self.reductions[depth.clamp(0, MAX_MOVES as i32 - 1) as usize]
+            * self.reductions[move_count.clamp(0, MAX_MOVES as i32 - 1) as usize];
+        (product + 1642 - delta * 1024 / self.root_delta) / 1024
+            + i32::from(!improving && product > 916)
+    }
+
+    /// Continuation histories of a move to `square` after the moves one, two and four
+    /// plies earlier.
+    fn continuation_score(&self, ply: usize, square: usize) -> i32 {
+        [1, 2, 4]
+            .into_iter()
+            .map(|back| {
+                self.histories
+                    .continuation(self.at(ply, back).continuation, square)
+            })
+            .sum()
+    }
+
+    fn continuations(&self, ply: usize) -> [usize; 4] {
+        [1, 2, 4, 6].map(|back| self.at(ply, back).continuation)
+    }
+
+    /// The piece and square of the move that led to `ply`, if it was a move and a piece
+    /// stands on its destination.
+    fn previous_square(&self, ply: usize) -> Option<usize> {
+        let previous = self.at(ply, 1).mv;
+        if previous == Move::NULL {
+            return None;
+        }
+        let piece = self.position.piece_at(previous.to())?;
+        Some(piece_square(piece, previous.to().index()))
+    }
+
+    fn update_continuations(&mut self, ply: usize, square: usize, bonus: i32) {
+        let in_check = self.at(ply, 0).in_check;
+        for back in [1, 2, 4, 6] {
+            if in_check && back > 2 {
+                break;
+            }
+            let frame = self.at(ply, back);
+            if frame.mv != Move::NULL {
+                let table = frame.continuation;
+                self.histories.update_continuation(table, square, bonus);
+            }
+        }
+    }
+
+    fn update_quiet_stats(&mut self, ply: usize, mv: Move, bonus: i32) {
+        let frame = self.at_mut(ply, 0);
+        if frame.killers[0] != mv {
+            frame.killers[1] = frame.killers[0];
+            frame.killers[0] = mv;
+        }
+        let side = self.position.side_to_move().index();
+        self.histories.update_main(side, mv, bonus);
+        let square = moved_square(&self.position, mv);
+        self.update_continuations(ply, square, bonus);
+        if let Some(previous) = self.previous_square(ply) {
+            self.histories.set_counter(previous, mv);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_all_stats(
+        &mut self,
+        ply: usize,
+        best_move: Move,
+        best: i32,
+        beta: i32,
+        quiets: &[Move],
+        captures: &[Move],
+        depth: i32,
+    ) {
+        let side = self.position.side_to_move().index();
+        let bonus = stat_bonus(depth + 1);
+        if is_capture(best_move) {
+            let square = moved_square(&self.position, best_move);
+            let victim = victim_slot(victim(&self.position, best_move));
+            self.histories.update_capture(square, victim, bonus);
+        } else {
+            let quiet_bonus = if best > beta + v(137) {
+                bonus
+            } else {
+                stat_bonus(depth)
+            };
+            self.update_quiet_stats(ply, best_move, quiet_bonus);
+            for &mv in quiets {
+                self.histories.update_main(side, mv, -quiet_bonus);
+                let square = moved_square(&self.position, mv);
+                self.update_continuations(ply, square, -quiet_bonus);
+            }
+        }
+        // An early quiet move of the previous ply that was refuted loses some credit.
+        let previous = *self.at(ply, 1);
+        if (previous.move_count == 1 + i32::from(previous.tt_hit)
+            || previous.mv == previous.killers[0])
+            && !previous.captured
+        {
+            if let Some(square) = self.previous_square(ply) {
+                self.update_continuations(ply - 1, square, -bonus);
+            }
+        }
+        for &mv in captures {
+            let square = moved_square(&self.position, mv);
+            let victim = victim_slot(victim(&self.position, mv));
+            self.histories.update_capture(square, victim, -bonus);
+        }
+    }
+
+    /// Principal variation search after Stockfish 15.1 (GPL-3.0,
+    /// https://github.com/official-stockfish/Stockfish), whose pruning, extension and
+    /// reduction rules and margins it follows, the margins converted to centipawns.
+    #[allow(clippy::too_many_lines)]
+    fn negamax<const PV: bool>(
         &mut self,
         mut depth: i32,
         mut alpha: i32,
         mut beta: i32,
         ply: usize,
-        allow_null: bool,
         cut_node: bool,
     ) -> i32 {
+        if depth <= 0 {
+            return self.quiescence::<PV>(alpha, beta, ply, 0);
+        }
         self.pv_len[ply] = 0;
         if self.visit(ply) {
             return 0;
         }
-        if self.position.is_repetition() || self.position.is_insufficient_material() {
-            return 0;
+        let in_check = self.position.checkers().0 != 0;
+        self.at_mut(ply, 0).in_check = in_check;
+        let prior_capture = self.at(ply, 1).captured;
+        let side = self.position.side_to_move();
+        let us = side.index();
+        if self.is_draw() {
+            return self.value_draw();
         }
         if ply >= MAX_PLY - 1 {
-            return self.static_evaluation(ply);
-        }
-        let in_check = self.position.checkers().0 != 0;
-        if in_check {
-            depth += 1;
-        }
-        if depth <= 0 {
-            return self.quiescence(alpha, beta, ply);
+            return if in_check {
+                0
+            } else {
+                self.corrected(self.static_evaluation(ply))
+            };
         }
         // No line from here can mate faster than a mate at the next ply or be mated
         // sooner than now, so a window outside those bounds is already decided.
@@ -843,294 +1153,598 @@ impl<'a> Search<'a> {
         if alpha >= beta {
             return alpha;
         }
-        let key = self.position.key();
-        let pv_node = beta - alpha > 1;
-        let original_alpha = alpha;
-        let hit = self.tt.probe(key, ply);
-        let tt_move = hit.and_then(|record| {
-            if record.mv != Move::NULL && self.position.is_pseudo_legal(record.mv) {
-                Some(record.mv)
-            } else {
-                None
-            }
-        });
-        // The table can cut before any move is generated, except where the fifty-move
-        // rule may already have ended the game.
-        if !pv_node && self.position.halfmove_clock() < 100 {
-            if let Some(record) = hit.filter(|record| {
-                record.depth >= depth as u8 && (record.mv == Move::NULL || tt_move.is_some())
-            }) {
-                match record.bound {
-                    Bound::Exact => return record.score,
-                    Bound::Lower if record.score >= beta => return record.score,
-                    Bound::Upper if record.score <= alpha => return record.score,
-                    _ => {}
-                }
-            }
-        }
-        self.position.generate_moves(&mut self.lists[ply]);
-        if self.lists[ply].is_empty() {
-            return if in_check { -MATE + ply as i32 } else { 0 };
-        }
-        if self.position.halfmove_clock() >= 100 {
-            return 0;
-        }
-        if let Some(score) = self.probe_tablebases(depth, alpha, beta, ply, key, pv_node) {
-            return score;
-        }
-        let raw_eval = if in_check {
-            0
-        } else {
-            hit.map_or_else(|| self.static_evaluation(ply), |record| record.eval)
-        };
-        let static_eval = if in_check {
-            0
-        } else {
-            self.corrected(raw_eval)
-        };
-        // A stored search result bounds the true value more tightly than the static
-        // evaluation where its bound points the right way, so pruning uses it instead.
-        let eval = match hit {
-            Some(record)
-                if !in_check
-                    && record.score.abs() < MATE_BOUND
-                    && match record.bound {
-                        Bound::Exact => true,
-                        Bound::Lower => record.score > static_eval,
-                        Bound::Upper => record.score < static_eval,
-                    } =>
-            {
-                record.score
-            }
-            _ => static_eval,
-        };
-        if !pv_node && !in_check && beta.abs() < MATE_BOUND {
-            // Reverse futility: a quiet position this far above beta at low depth is not
-            // expected to fall back below it within the remaining plies.
-            if depth <= 6 && eval - 80 * depth >= beta {
-                return eval;
-            }
-            if allow_null
-                && depth >= 3
-                && eval >= beta
-                && self
-                    .position
-                    .has_non_pawn_material(self.position.side_to_move())
-            {
-                // Pawn-only positions are excluded because zugzwang is common there and
-                // passing would be an illegal advantage the null move cannot represent.
-                let reduction = 3 + depth / 4 + ((eval - beta) / 200).min(3);
-                self.played[ply] = None;
-                self.make_null(ply);
-                let score = -self.negamax(
-                    depth - 1 - reduction,
-                    -beta,
-                    -beta + 1,
-                    ply + 1,
-                    false,
-                    !cut_node,
-                );
-                self.position.unmake();
-                if self.aborted {
-                    return 0;
-                }
-                if score >= beta {
-                    return if score >= MATE_BOUND { beta } else { score };
-                }
-            }
-        }
-        // ProbCut: a capture that beats beta by a margin in quiescence and then in a
-        // reduced search is taken to hold at full depth as well.
-        let probcut_beta = beta + 200;
-        if !pv_node
-            && !in_check
-            && depth >= 5
-            && beta.abs() < MATE_BOUND
-            && !hit.is_some_and(|record| {
-                record.depth as i32 >= depth - 3 && record.score < probcut_beta
-            })
+        let double_extensions = self.at(ply, 1).double_extensions;
         {
-            for index in 0..self.lists[ply].len() {
-                let mv = self.lists[ply].get(index);
-                if is_quiet(mv) || !self.position.see_ge(mv, probcut_beta - static_eval) {
-                    continue;
+            let frame = self.at_mut(ply, 0);
+            frame.double_extensions = double_extensions;
+            frame.move_count = 0;
+        }
+        self.stack[ply + FRAME_OFFSET + 1].tt_pv = false;
+        self.stack[ply + FRAME_OFFSET + 1].excluded = Move::NULL;
+        self.stack[ply + FRAME_OFFSET + 2].killers = [Move::NULL; 2];
+        self.stack[ply + FRAME_OFFSET + 2].cutoff_count = 0;
+        self.stack[ply + FRAME_OFFSET + 2].stat_score = 0;
+        let previous_square = self.previous_square(ply);
+        let excluded = self.at(ply, 0).excluded;
+        let key = if excluded == Move::NULL {
+            self.position.key()
+        } else {
+            excluded_key(self.position.key(), excluded)
+        };
+        let rule50 = i32::from(self.position.halfmove_clock());
+        // A stored move that is not legal here marks a key collision: the entry is ignored.
+        let hit = self
+            .tt
+            .probe(key)
+            .filter(|record| record.mv == Move::NULL || self.position.is_legal_move(record.mv));
+        let tt_value = hit.map_or(VALUE_NONE, |record| {
+            value_from_tt(record.score, ply, rule50)
+        });
+        let tt_move = hit.map_or(Move::NULL, |record| record.mv);
+        let tt_capture = tt_move != Move::NULL && is_capture(tt_move);
+        self.at_mut(ply, 0).tt_hit = hit.is_some();
+        if excluded == Move::NULL {
+            self.at_mut(ply, 0).tt_pv = PV || hit.is_some_and(|record| record.pv);
+        }
+        let tt_pv = self.at(ply, 0).tt_pv;
+        if let Some(record) = hit.filter(|record| {
+            !PV && tt_value != VALUE_NONE
+                && record.depth > depth - i32::from(record.bound == Bound::Exact)
+                && record.bound.covers(tt_value >= beta)
+        }) {
+            if record.mv != Move::NULL {
+                if tt_value >= beta {
+                    if !tt_capture {
+                        self.update_quiet_stats(ply, tt_move, stat_bonus(depth));
+                    }
+                    if self.at(ply, 1).move_count <= 2 && !prior_capture {
+                        if let Some(square) = previous_square {
+                            self.update_continuations(ply - 1, square, -stat_bonus(depth + 1));
+                        }
+                    }
+                } else if !tt_capture {
+                    let penalty = -stat_bonus(depth);
+                    self.histories.update_main(us, tt_move, penalty);
+                    let square = moved_square(&self.position, tt_move);
+                    self.update_continuations(ply, square, penalty);
                 }
-                self.played[ply] = Some(self.piece_square(mv));
-                self.make(mv, ply);
-                let mut score = -self.quiescence(-probcut_beta, -probcut_beta + 1, ply + 1);
-                if score >= probcut_beta && !self.aborted {
-                    score = -self.negamax(
-                        depth - 4,
-                        -probcut_beta,
-                        -probcut_beta + 1,
-                        ply + 1,
-                        true,
-                        !cut_node,
+            }
+            if rule50 < 90 {
+                return tt_value;
+            }
+        }
+        let mut best = -INF;
+        let mut max_value = INF;
+        if excluded == Move::NULL {
+            if let Some((score, bound)) = self.probe_tablebases(ply) {
+                if bound == Bound::Exact
+                    || (bound == Bound::Lower && score >= beta)
+                    || (bound == Bound::Upper && score <= alpha)
+                {
+                    self.tt.store(
+                        key,
+                        Record {
+                            mv: Move::NULL,
+                            score: value_to_tt(score, ply),
+                            eval: VALUE_NONE,
+                            depth: (depth + 6).min(MAX_PLY as i32 - 1),
+                            bound,
+                            pv: tt_pv,
+                        },
                     );
-                }
-                self.position.unmake();
-                if self.aborted {
-                    return 0;
-                }
-                if score >= probcut_beta {
                     return score;
                 }
-            }
-        }
-        // Internal iterative reduction: without a stored move this node was not searched
-        // before, so it is searched a ply shallower rather than with poor ordering.
-        if depth >= 4 && tt_move.is_none() {
-            depth -= 1;
-        }
-        self.order(tt_move, ply);
-        let side = self.position.side_to_move().index();
-        let mut best = -INF;
-        let mut best_move = Move::NULL;
-        let mut quiets_tried = [Move::NULL; 64];
-        let mut quiet_count = 0;
-        for index in 0..self.lists[ply].len() {
-            let mv = self.lists[ply].get(index);
-            let quiet = is_quiet(mv);
-            let gives_check = self.position.gives_check(mv);
-            if !pv_node && !in_check && !gives_check && best > -MATE_BOUND {
-                if quiet {
-                    let late = 3 + (depth * depth) as usize;
-                    if depth <= 4 && index >= late {
-                        continue;
+                if PV {
+                    if bound == Bound::Lower {
+                        best = score;
+                        alpha = alpha.max(score);
+                    } else {
+                        max_value = score;
                     }
-                    if depth <= 3 && eval + 100 + 100 * depth <= alpha {
-                        continue;
-                    }
-                    // Quiet moves with a poor record here, or that lose material to the
-                    // exchanges on their square, are left out near the leaves.
-                    let side_history = self.history[side][mv.from().index()][mv.to().index()];
-                    let continuation = self
-                        .continuation_index(mv, ply)
-                        .map_or(0, |index| self.continuation[index]);
-                    if depth <= 3 && side_history + continuation < -3000 * depth {
-                        continue;
-                    }
-                    if depth <= 6 && !self.position.see_ge(mv, -30 * depth * depth) {
-                        continue;
-                    }
-                } else if depth <= 6 && !self.position.see_ge(mv, -100 * depth) {
-                    continue;
                 }
             }
-            let history = self.history[side][mv.from().index()][mv.to().index()];
-            self.played[ply] = Some(self.piece_square(mv));
-            self.make(mv, ply);
-            let new_depth = depth - 1;
-            let mut score;
-            if index == 0 {
-                score = -self.negamax(
-                    new_depth,
-                    -beta,
-                    -alpha,
-                    ply + 1,
-                    true,
-                    !pv_node && !cut_node,
-                );
+        }
+        let mut raw_eval = VALUE_NONE;
+        let mut static_eval = VALUE_NONE;
+        let mut improving = false;
+        if in_check {
+            self.at_mut(ply, 0).static_eval = VALUE_NONE;
+        } else {
+            let mut eval;
+            if excluded != Move::NULL {
+                static_eval = self.at(ply, 0).static_eval;
+                eval = static_eval;
             } else {
-                let mut reduction = 0;
-                if depth >= 3 && index >= 3 && quiet && !in_check && !gives_check {
-                    reduction = i32::from(self.reductions[depth.min(63) as usize][index.min(63)]);
-                    if pv_node {
-                        reduction -= 1;
+                raw_eval = match hit {
+                    Some(record) if record.eval != VALUE_NONE => record.eval,
+                    _ => self.static_evaluation(ply),
+                };
+                static_eval = self.corrected(raw_eval);
+                eval = static_eval;
+                match hit {
+                    // A stored search result bounds the value more tightly than the static
+                    // evaluation where its bound points the right way.
+                    Some(record) => {
+                        if tt_value != VALUE_NONE && record.bound.covers(tt_value > eval) {
+                            eval = tt_value;
+                        }
                     }
-                    if self.killers[ply].contains(&mv) {
-                        reduction -= 1;
+                    None => self.tt.store(
+                        key,
+                        Record {
+                            mv: Move::NULL,
+                            score: VALUE_NONE,
+                            eval: raw_eval,
+                            depth: DEPTH_NONE,
+                            bound: Bound::None,
+                            pv: tt_pv,
+                        },
+                    ),
+                }
+                self.at_mut(ply, 0).static_eval = static_eval;
+            }
+            // The static evaluation's swing after the previous quiet move says how good
+            // that move was.
+            let previous = *self.at(ply, 1);
+            if previous.mv != Move::NULL
+                && !previous.in_check
+                && !prior_capture
+                && previous.static_eval != VALUE_NONE
+            {
+                let swing = (previous.static_eval + static_eval) * 208 / 100;
+                let bonus = (-19 * swing).clamp(-1914, 1914);
+                self.histories
+                    .update_main(side.other().index(), previous.mv, bonus);
+            }
+            let improvement = if self.at(ply, 2).static_eval != VALUE_NONE {
+                static_eval - self.at(ply, 2).static_eval
+            } else if self.at(ply, 4).static_eval != VALUE_NONE {
+                static_eval - self.at(ply, 4).static_eval
+            } else {
+                v(168)
+            };
+            improving = improvement > 0;
+            // Razoring: far below alpha, only a tactic could help, which quiescence sees.
+            if eval < alpha - v(369 + 254 * depth * depth) {
+                let value = self.quiescence::<false>(alpha - 1, alpha, ply, 0);
+                if value < alpha {
+                    return value;
+                }
+            }
+            // Reverse futility: far enough above beta at low depth to stay there.
+            if !tt_pv
+                && depth < 8
+                && eval - futility_margin(depth, improving) - v(self.at(ply, 1).stat_score / 303)
+                    >= beta
+                && eval >= beta
+                && eval < v(28_031)
+            {
+                return eval;
+            }
+            // Null move: passing and still failing high means some move surely does too.
+            let previous = *self.at(ply, 1);
+            if !PV
+                && !previous.null
+                && previous.stat_score < 17_139
+                && eval >= beta
+                && eval >= static_eval
+                && static_eval >= beta - v(20 * depth) - improvement / 13 + v(233)
+                && excluded == Move::NULL
+                && self.position.has_non_pawn_material(side)
+                && (ply >= self.nmp_min_ply || us != self.nmp_side)
+            {
+                let reduction = ((eval - beta) / v(168)).min(7) + depth / 3 + 4;
+                self.make_null(ply);
+                let mut null_value =
+                    -self.negamax::<false>(depth - reduction, -beta, -beta + 1, ply + 1, !cut_node);
+                self.position.unmake();
+                self.at_mut(ply, 0).null = false;
+                if self.aborted {
+                    return 0;
+                }
+                if null_value >= beta {
+                    if null_value >= TB_WIN_IN_MAX_PLY {
+                        null_value = beta;
                     }
-                    if cut_node {
-                        reduction += 2;
+                    if self.nmp_min_ply != 0 || (beta.abs() < KNOWN_WIN && depth < 14) {
+                        return null_value;
                     }
-                    reduction -= history / 8192;
-                    reduction = reduction.clamp(0, new_depth - 1);
+                    // At high depth, verify with null moves off for this side for a while,
+                    // against zugzwang.
+                    self.nmp_min_ply = ply + (3 * (depth - reduction) / 4).max(0) as usize;
+                    self.nmp_side = us;
+                    let value =
+                        self.negamax::<false>(depth - reduction, beta - 1, beta, ply, false);
+                    self.nmp_min_ply = 0;
+                    if self.aborted {
+                        return 0;
+                    }
+                    if value >= beta {
+                        return null_value;
+                    }
                 }
-                // Reduced searches expect to fail high below, the full-depth retry flips
-                // the expectation, and a principal variation search expects neither.
-                score = -self.negamax(
-                    new_depth - reduction,
-                    -alpha - 1,
-                    -alpha,
-                    ply + 1,
-                    true,
-                    reduction > 0 || !cut_node,
-                );
-                if score > alpha && reduction > 0 && !self.aborted {
-                    score = -self.negamax(new_depth, -alpha - 1, -alpha, ply + 1, true, !cut_node);
+            }
+            // ProbCut: a capture that beats beta by a margin in quiescence and then in a
+            // reduced search is taken to hold at full depth as well.
+            let probcut_beta = beta + v(191) - v(54) * i32::from(improving);
+            if !PV
+                && depth > 4
+                && beta.abs() < TB_WIN_IN_MAX_PLY
+                && !hit.is_some_and(|record| {
+                    record.depth >= depth - 3 && tt_value != VALUE_NONE && tt_value < probcut_beta
+                })
+            {
+                let threshold = (probcut_beta - static_eval) * 208 / 100;
+                let mut picker = Picker::probcut(&self.position, tt_move, threshold);
+                while let Some(mv) = picker.next(&self.position, &self.histories, false) {
+                    if mv == excluded {
+                        continue;
+                    }
+                    let square = moved_square(&self.position, mv);
+                    self.make(mv, ply);
+                    self.at_mut(ply, 0).continuation = continuation_table(false, true, square);
+                    let mut value =
+                        -self.quiescence::<false>(-probcut_beta, -probcut_beta + 1, ply + 1, 0);
+                    if value >= probcut_beta && !self.aborted {
+                        value = -self.negamax::<false>(
+                            depth - 4,
+                            -probcut_beta,
+                            -probcut_beta + 1,
+                            ply + 1,
+                            !cut_node,
+                        );
+                    }
+                    self.position.unmake();
+                    if self.aborted {
+                        return 0;
+                    }
+                    if value >= probcut_beta {
+                        self.tt.store(
+                            key,
+                            Record {
+                                mv,
+                                score: value_to_tt(value, ply),
+                                eval: raw_eval,
+                                depth: depth - 3,
+                                bound: Bound::Lower,
+                                pv: tt_pv,
+                            },
+                        );
+                        return value;
+                    }
                 }
-                if score > alpha && score < beta && !self.aborted {
-                    score = -self.negamax(new_depth, -beta, -alpha, ply + 1, true, false);
+            }
+            // Internal iterative reduction: a node without a stored move was not searched
+            // before, so it is searched shallower rather than with poor ordering.
+            if PV && tt_move == Move::NULL {
+                depth -= 3;
+            }
+            if depth <= 0 {
+                return self.quiescence::<PV>(alpha, beta, ply, 0);
+            }
+            if cut_node && depth >= 9 && tt_move == Move::NULL {
+                depth -= 2;
+            }
+        }
+        // In check, a stored capture well above beta is trusted outright.
+        let probcut_beta = beta + v(417);
+        if in_check
+            && !PV
+            && depth >= 2
+            && tt_capture
+            && hit.is_some_and(|record| record.bound.covers(true) && record.depth >= depth - 3)
+            && tt_value >= probcut_beta
+            && tt_value.abs() <= KNOWN_WIN
+            && beta.abs() <= KNOWN_WIN
+        {
+            return probcut_beta;
+        }
+        let continuations = self.continuations(ply);
+        let counter = previous_square.map_or(Move::NULL, |square| self.histories.counter(square));
+        let killers = self.at(ply, 0).killers;
+        let mut picker = Picker::main(
+            &self.position,
+            tt_move,
+            depth,
+            killers,
+            counter,
+            continuations,
+        );
+        let likely_fail_low = PV
+            && tt_move != Move::NULL
+            && hit.is_some_and(|record| record.bound.covers(false) && record.depth >= depth);
+        let mut move_count = 0;
+        let mut move_count_pruning = false;
+        let mut singular_quiet_lmr = false;
+        let mut best_move = Move::NULL;
+        let mut quiets = [Move::NULL; 64];
+        let mut quiet_count = 0;
+        let mut captures = [Move::NULL; 32];
+        let mut capture_count = 0;
+        let non_pawn = self.position.has_non_pawn_material(side);
+        while let Some(mv) = picker.next(&self.position, &self.histories, move_count_pruning) {
+            if mv == excluded {
+                continue;
+            }
+            move_count += 1;
+            self.at_mut(ply, 0).move_count = move_count;
+            let capture = is_capture(mv);
+            let square = moved_square(&self.position, mv);
+            let gives_check = self.position.gives_check(mv);
+            let mut new_depth = depth - 1;
+            let delta = beta - alpha;
+            // Pruning at shallow depth.
+            if non_pawn && best > -TB_WIN_IN_MAX_PLY {
+                move_count_pruning = move_count >= futility_move_count(improving, depth);
+                let lmr_depth =
+                    (new_depth - self.reduction(improving, depth, move_count, delta)).max(0);
+                if capture || gives_check {
+                    let taken = victim(&self.position, mv);
+                    if !gives_check
+                        && !PV
+                        && lmr_depth < 7
+                        && !in_check
+                        && static_eval
+                            + v(180
+                                + 201 * lmr_depth
+                                + taken.map_or(0, |kind| ENDGAME[kind.index()])
+                                + self.histories.capture(square, victim_slot(taken)) / 6)
+                            < alpha
+                    {
+                        continue;
+                    }
+                    if !self.position.see_ge(mv, -222 * depth) {
+                        continue;
+                    }
+                } else {
+                    let mut history = self.continuation_score(ply, square);
+                    if lmr_depth < 5 && history < -3875 * (depth - 1) {
+                        continue;
+                    }
+                    history += 2 * self.histories.main(us, mv);
+                    if !in_check
+                        && lmr_depth < 13
+                        && static_eval + v(106 + 145 * lmr_depth + history / 52) <= alpha
+                    {
+                        continue;
+                    }
+                    if !self
+                        .position
+                        .see_ge(mv, -24 * lmr_depth * lmr_depth - 15 * lmr_depth)
+                    {
+                        continue;
+                    }
                 }
+            }
+            // Extensions.
+            let mut extension = 0;
+            if (ply as i32) < self.root_depth * 2 {
+                let singular = hit.filter(|record| {
+                    mv == tt_move
+                        && excluded == Move::NULL
+                        && depth
+                            >= 4 - i32::from(self.completed_depth > 24)
+                                + 2 * i32::from(PV && record.pv)
+                        && tt_value.abs() < KNOWN_WIN
+                        && record.bound.covers(true)
+                        && record.depth >= depth - 3
+                });
+                if singular.is_some() {
+                    // Singular extension: if every other move fails low against a margin
+                    // below the stored score, the stored move alone holds and is extended.
+                    let singular_beta = tt_value - v((3 + i32::from(tt_pv && !PV)) * depth);
+                    let tt_hit = self.at(ply, 0).tt_hit;
+                    self.at_mut(ply, 0).excluded = mv;
+                    let value = self.negamax::<false>(
+                        (depth - 1) / 2,
+                        singular_beta - 1,
+                        singular_beta,
+                        ply,
+                        cut_node,
+                    );
+                    let frame = self.at_mut(ply, 0);
+                    frame.excluded = Move::NULL;
+                    frame.move_count = move_count;
+                    frame.tt_hit = tt_hit;
+                    if self.aborted {
+                        return 0;
+                    }
+                    if value < singular_beta {
+                        extension = 1;
+                        singular_quiet_lmr = !tt_capture;
+                        if !PV
+                            && value < singular_beta - v(25)
+                            && self.at(ply, 0).double_extensions <= 9
+                        {
+                            extension = 2;
+                        }
+                    } else if singular_beta >= beta {
+                        // Multi-cut: another move also beats beta, so the node fails high.
+                        return singular_beta;
+                    } else if tt_value >= beta {
+                        extension = -2;
+                    } else if tt_value <= alpha && tt_value <= value {
+                        extension = -1;
+                    }
+                } else if (gives_check && depth > 9 && (in_check || static_eval.abs() > v(82)))
+                    || (PV
+                        && mv == tt_move
+                        && mv == killers[0]
+                        && self.histories.continuation(continuations[0], square) >= 5177)
+                {
+                    extension = 1;
+                }
+            }
+            new_depth += extension;
+            self.at_mut(ply, 0).double_extensions =
+                self.at(ply, 1).double_extensions + i32::from(extension == 2);
+            let stat_score =
+                2 * self.histories.main(us, mv) + self.continuation_score(ply, square) - 4433;
+            let threatened = picker.threatened.contains(mv.from());
+            self.make(mv, ply);
+            let mut value = -INF;
+            // Late move reductions.
+            if depth >= 2
+                && move_count > 1 + i32::from(PV && ply <= 1)
+                && (!tt_pv || !capture || (cut_node && self.at(ply, 1).move_count > 1))
+            {
+                let mut r = self.reduction(improving, depth, move_count, delta);
+                if tt_pv && !likely_fail_low {
+                    r -= 2;
+                }
+                if self.at(ply, 1).move_count > 7 {
+                    r -= 1;
+                }
+                if cut_node {
+                    r += 2;
+                }
+                if tt_capture {
+                    r += 1;
+                }
+                if PV {
+                    r -= 1 + 11 / (3 + depth);
+                }
+                if singular_quiet_lmr {
+                    r -= 1;
+                }
+                if depth > 9 && threatened {
+                    r -= 1;
+                }
+                if self.at(ply + 1, 0).cutoff_count > 3 {
+                    r += 1;
+                }
+                self.at_mut(ply, 0).stat_score = stat_score;
+                r -= stat_score / (13_628 + 4000 * i32::from(depth > 7 && depth < 19));
+                let reduced = (new_depth - r).clamp(1, new_depth + 1);
+                value = -self.negamax::<false>(reduced, -(alpha + 1), -alpha, ply + 1, true);
+                if value > alpha && reduced < new_depth && !self.aborted {
+                    let deeper = value > alpha + v(64 + 11 * (new_depth - reduced));
+                    let shallower = value < best + v(new_depth);
+                    new_depth += i32::from(deeper) - i32::from(shallower);
+                    if new_depth > reduced {
+                        value = -self.negamax::<false>(
+                            new_depth,
+                            -(alpha + 1),
+                            -alpha,
+                            ply + 1,
+                            !cut_node,
+                        );
+                    }
+                    let mut bonus = if value > alpha {
+                        stat_bonus(new_depth)
+                    } else {
+                        -stat_bonus(new_depth)
+                    };
+                    if capture {
+                        bonus /= 6;
+                    }
+                    self.update_continuations(ply, square, bonus);
+                }
+            } else if !PV || move_count > 1 {
+                value = -self.negamax::<false>(new_depth, -(alpha + 1), -alpha, ply + 1, !cut_node);
+            }
+            if PV && (move_count == 1 || (value > alpha && value < beta)) && !self.aborted {
+                value =
+                    -self.negamax::<true>(new_depth.min(depth + 1), -beta, -alpha, ply + 1, false);
             }
             self.position.unmake();
             if self.aborted {
                 return 0;
             }
-            if score > best {
-                best = score;
-                best_move = mv;
-            }
-            if score > alpha {
-                alpha = score;
-                self.pv[ply][0] = mv;
-                let child_len = self.pv_len[ply + 1].min(MAX_PLY - ply - 1);
-                for index in 0..child_len {
-                    self.pv[ply][index + 1] = self.pv[ply + 1][index];
-                }
-                self.pv_len[ply] = child_len + 1;
-            }
-            if alpha >= beta {
-                if quiet {
-                    if self.killers[ply][0] != mv {
-                        self.killers[ply][1] = self.killers[ply][0];
-                        self.killers[ply][0] = mv;
+            if value > best {
+                best = value;
+                if value > alpha {
+                    best_move = mv;
+                    if PV {
+                        self.pv[ply][0] = mv;
+                        let child_len = self.pv_len[ply + 1].min(MAX_PLY - ply - 1);
+                        for index in 0..child_len {
+                            self.pv[ply][index + 1] = self.pv[ply + 1][index];
+                        }
+                        self.pv_len[ply] = child_len + 1;
                     }
-                    if let Some(previous) = self.previous_move(ply) {
-                        self.counters[previous] = mv;
-                    }
-                    let bonus = (16 * depth * depth).min(1600);
-                    self.update_history(side, mv, bonus, ply);
-                    for &tried in &quiets_tried[..quiet_count] {
-                        self.update_history(side, tried, -bonus, ply);
+                    if PV && value < beta {
+                        alpha = value;
+                        if depth > 1 && depth < 6 && beta < KNOWN_WIN && alpha > -KNOWN_WIN {
+                            depth -= 1;
+                        }
+                    } else {
+                        self.at_mut(ply, 0).cutoff_count += 1;
+                        break;
                     }
                 }
-                break;
             }
-            if quiet && quiet_count < quiets_tried.len() {
-                quiets_tried[quiet_count] = mv;
-                quiet_count += 1;
+            if mv != best_move {
+                if capture && capture_count < captures.len() {
+                    captures[capture_count] = mv;
+                    capture_count += 1;
+                } else if !capture && quiet_count < quiets.len() {
+                    quiets[quiet_count] = mv;
+                    quiet_count += 1;
+                }
             }
         }
-        let bound = if best >= beta {
-            Bound::Lower
-        } else if best <= original_alpha {
-            Bound::Upper
-        } else {
-            Bound::Exact
-        };
-        if !in_check
-            && (best_move == Move::NULL || is_quiet(best_move))
-            && best.abs() < MATE_BOUND
-            && !(bound == Bound::Lower && best <= static_eval)
-            && !(bound == Bound::Upper && best >= static_eval)
-        {
-            self.update_correction(best - static_eval, depth);
+        if move_count == 0 {
+            best = if excluded != Move::NULL {
+                alpha
+            } else if in_check {
+                -MATE + ply as i32
+            } else {
+                0
+            };
+        } else if best_move != Move::NULL {
+            self.update_all_stats(
+                ply,
+                best_move,
+                best,
+                beta,
+                &quiets[..quiet_count],
+                &captures[..capture_count],
+                depth,
+            );
+        } else if (depth >= 5 || PV) && !prior_capture {
+            // The previous move refuted everything here, so it gets credit.
+            if let Some(square) = previous_square {
+                let extra = PV || cut_node || best < alpha - v(62 * depth);
+                let bonus = stat_bonus(depth) * (1 + i32::from(extra));
+                self.update_continuations(ply - 1, square, bonus);
+            }
         }
-        self.tt.store(
-            key,
-            ply,
-            Record {
-                mv: best_move,
-                score: best,
-                eval: raw_eval,
-                depth: depth as u8,
-                bound,
-                pv: pv_node,
-                age: 0,
-            },
-        );
+        if PV {
+            best = best.min(max_value);
+        }
+        if best <= alpha {
+            let frame_pv = self.at(ply, 0).tt_pv || (self.at(ply, 1).tt_pv && depth > 3);
+            self.at_mut(ply, 0).tt_pv = frame_pv;
+        }
+        if excluded == Move::NULL {
+            let bound = if best >= beta {
+                Bound::Lower
+            } else if PV && best_move != Move::NULL {
+                Bound::Exact
+            } else {
+                Bound::Upper
+            };
+            if !in_check
+                && (best_move == Move::NULL || !is_capture(best_move))
+                && best.abs() < TB_WIN_IN_MAX_PLY
+                && !(bound == Bound::Lower && best <= static_eval)
+                && !(bound == Bound::Upper && best >= static_eval)
+            {
+                self.update_correction(best - static_eval, depth);
+            }
+            self.tt.store(
+                key,
+                Record {
+                    mv: best_move,
+                    score: value_to_tt(best, ply),
+                    eval: raw_eval,
+                    depth,
+                    bound,
+                    pv: self.at(ply, 0).tt_pv,
+                },
+            );
+        }
         best
     }
 
@@ -1140,7 +1754,7 @@ impl<'a> Search<'a> {
     fn corrected(&self, raw: i32) -> i32 {
         let (side, slot) = self.correction_slot();
         let correction = self.correction[side][slot] / CORRECTION_GRAIN;
-        (raw + correction).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+        (raw + correction).clamp(-TB_WIN_IN_MAX_PLY + 1, TB_WIN_IN_MAX_PLY - 1)
     }
 
     fn update_correction(&mut self, error: i32, depth: i32) {
@@ -1156,224 +1770,186 @@ impl<'a> Search<'a> {
         (side, self.position.pawn_key() as usize % CORRECTION_ENTRIES)
     }
 
-    fn update_history(&mut self, side: usize, mv: Move, bonus: i32, ply: usize) {
-        // Gravity keeps entries inside +-HISTORY_MAX: the closer a value is to the bound,
-        // the less a further bonus in the same direction moves it.
-        let gravity = |entry: &mut i32| *entry += bonus - *entry * bonus.abs() / HISTORY_MAX;
-        gravity(&mut self.history[side][mv.from().index()][mv.to().index()]);
-        if let Some(index) = self.continuation_index(mv, ply) {
-            gravity(&mut self.continuation[index]);
-        }
-    }
-
-    fn piece_square(&self, mv: Move) -> usize {
-        let piece = self
-            .position
-            .piece_at(mv.from())
-            .expect("legal move has a mover");
-        (piece.color.index() * 6 + piece.kind.index()) * 64 + mv.to().index()
-    }
-
-    /// Continuation history slot for `mv` as a reply to the move played one ply earlier:
-    /// quiet replies that refuted the same piece arriving on the same square tend to work
-    /// again, which plain from-to history cannot see.
-    fn continuation_index(&self, mv: Move, ply: usize) -> Option<usize> {
-        Some(self.previous_move(ply)? * PIECE_SQUARES + self.piece_square(mv))
-    }
-
-    /// Piece and destination of the move that led to `ply`, absent after a null move.
-    fn previous_move(&self, ply: usize) -> Option<usize> {
-        self.played[ply.checked_sub(1)?]
-    }
-
-    fn quiescence(&mut self, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+    /// Quiescence search after Stockfish 15.1: captures, and quiet checks at its first
+    /// ply, until the position is quiet; stand pat when not in check.
+    #[allow(clippy::too_many_lines)]
+    fn quiescence<const PV: bool>(
+        &mut self,
+        mut alpha: i32,
+        beta: i32,
+        ply: usize,
+        depth: i32,
+    ) -> i32 {
         self.pv_len[ply] = 0;
         if self.visit(ply) {
             return 0;
         }
         let in_check = self.position.checkers().0 != 0;
-        if self.position.is_repetition()
-            || self.position.is_insufficient_material()
-            || self.position.is_fifty_move_draw()
-        {
+        self.at_mut(ply, 0).in_check = in_check;
+        if self.is_draw() {
             return 0;
         }
-        let key = self.position.key();
-        let original_alpha = alpha;
-        let hit = self.tt.probe(key, ply);
-        let tt_move = hit
-            .map(|record| record.mv)
-            .filter(|&mv| mv != Move::NULL && self.position.is_pseudo_legal(mv));
-        // Any stored bound is at least as deep as quiescence, so it can cut here directly.
-        if let Some(record) = hit.filter(|record| record.mv == Move::NULL || tt_move.is_some()) {
-            match record.bound {
-                Bound::Exact => return record.score,
-                Bound::Lower if record.score >= beta => return record.score,
-                Bound::Upper if record.score <= alpha => return record.score,
-                _ => {}
-            }
-        }
-        self.position.generate_tactical_moves(&mut self.lists[ply]);
-        if self.lists[ply].is_empty() {
-            // Without tactical moves the list is refilled only to tell stalemate apart,
-            // then emptied again so that no quiet move is searched.
-            if !in_check {
-                self.position.generate_moves(&mut self.lists[ply]);
-            }
-            if self.lists[ply].is_empty() {
-                return if in_check { -MATE + ply as i32 } else { 0 };
-            }
-            self.lists[ply].clear();
-        }
-        let raw_eval = if in_check {
-            0
-        } else {
-            hit.map_or_else(|| self.static_evaluation(ply), |record| record.eval)
-        };
-        let stand_pat = if in_check {
-            -INF
-        } else {
-            self.corrected(raw_eval)
-        };
         if ply >= MAX_PLY - 1 {
-            return if in_check { 0 } else { stand_pat };
+            return if in_check {
+                0
+            } else {
+                self.corrected(self.static_evaluation(ply))
+            };
         }
-        let mut best = stand_pat;
+        let tt_depth = if in_check || depth >= 0 { 0 } else { -1 };
+        let key = self.position.key();
+        let rule50 = i32::from(self.position.halfmove_clock());
+        let hit = self
+            .tt
+            .probe(key)
+            .filter(|record| record.mv == Move::NULL || self.position.is_legal_move(record.mv));
+        let tt_value = hit.map_or(VALUE_NONE, |record| {
+            value_from_tt(record.score, ply, rule50)
+        });
+        let tt_move = hit.map_or(Move::NULL, |record| record.mv);
+        let pv_hit = hit.is_some_and(|record| record.pv);
+        if !PV
+            && tt_value != VALUE_NONE
+            && hit.is_some_and(|record| {
+                record.depth >= tt_depth && record.bound.covers(tt_value >= beta)
+            })
+        {
+            return tt_value;
+        }
+        let mut raw_eval = VALUE_NONE;
+        let mut best;
+        let futility_base;
+        if in_check {
+            self.at_mut(ply, 0).static_eval = VALUE_NONE;
+            best = -INF;
+            futility_base = -INF;
+        } else {
+            raw_eval = match hit {
+                Some(record) if record.eval != VALUE_NONE => record.eval,
+                _ => self.static_evaluation(ply),
+            };
+            let static_eval = self.corrected(raw_eval);
+            self.at_mut(ply, 0).static_eval = static_eval;
+            best = static_eval;
+            if hit.is_some_and(|record| {
+                tt_value != VALUE_NONE && record.bound.covers(tt_value > best)
+            }) {
+                best = tt_value;
+            }
+            if best >= beta {
+                if hit.is_none() {
+                    self.tt.store(
+                        key,
+                        Record {
+                            mv: Move::NULL,
+                            score: value_to_tt(best, ply),
+                            eval: raw_eval,
+                            depth: DEPTH_NONE,
+                            bound: Bound::Lower,
+                            pv: false,
+                        },
+                    );
+                }
+                return best;
+            }
+            if PV && best > alpha {
+                alpha = best;
+            }
+            futility_base = best + v(153);
+        }
+        let continuations = self.continuations(ply);
+        let previous = self.at(ply, 1).mv;
+        let recapture = (previous != Move::NULL).then(|| previous.to());
+        let mut picker =
+            Picker::quiescence(&self.position, tt_move, depth, recapture, continuations);
         let mut best_move = Move::NULL;
-        if !in_check {
-            if stand_pat >= beta {
-                return stand_pat;
-            }
-            alpha = alpha.max(stand_pat);
-        }
-        self.order(tt_move, ply);
-        for index in 0..self.lists[ply].len() {
-            let mv = self.lists[ply].get(index);
-            if !in_check && !self.position.see_ge(mv, 0) {
-                continue;
-            }
-            // Delta pruning: a capture that cannot lift the stand-pat score near alpha
-            // even with its victim won outright is not searched.
-            if !in_check && mv.promotion().is_none() {
-                let victim = if mv.flag() == 5 {
-                    Some(PieceType::Pawn)
-                } else {
-                    self.position.piece_at(mv.to()).map(|piece| piece.kind)
-                };
-                if victim.is_some_and(|kind| stand_pat + VALUES[kind.index()] + 200 <= alpha) {
+        let mut move_count = 0;
+        let mut quiet_evasions = 0;
+        while let Some(mv) = picker.next(&self.position, &self.histories, false) {
+            let gives_check = self.position.gives_check(mv);
+            let capture = is_capture(mv);
+            move_count += 1;
+            if best > -TB_WIN_IN_MAX_PLY
+                && !gives_check
+                && Some(mv.to()) != recapture
+                && futility_base > -KNOWN_WIN
+                && mv.promotion().is_none()
+            {
+                if move_count > 2 {
+                    continue;
+                }
+                let futility_value = futility_base
+                    + v(victim(&self.position, mv).map_or(0, |kind| ENDGAME[kind.index()]));
+                if futility_value <= alpha {
+                    best = best.max(futility_value);
+                    continue;
+                }
+                if futility_base <= alpha && !self.position.see_ge(mv, 1) {
+                    best = best.max(futility_base);
                     continue;
                 }
             }
+            if best > -TB_WIN_IN_MAX_PLY && !self.position.see_ge(mv, 0) {
+                continue;
+            }
+            let square = moved_square(&self.position, mv);
+            if !capture
+                && best > -TB_WIN_IN_MAX_PLY
+                && self.histories.continuation(continuations[0], square) < 0
+                && self.histories.continuation(continuations[1], square) < 0
+            {
+                continue;
+            }
+            if best > -TB_WIN_IN_MAX_PLY && quiet_evasions > 1 {
+                break;
+            }
+            quiet_evasions += i32::from(!capture && in_check);
             self.make(mv, ply);
-            let score = -self.quiescence(-beta, -alpha, ply + 1);
+            let value = -self.quiescence::<PV>(-beta, -alpha, ply + 1, depth - 1);
             self.position.unmake();
             if self.aborted {
                 return 0;
             }
-            if score > best {
-                best = score;
-                best_move = mv;
-            }
-            if score > alpha {
-                alpha = score;
-                self.pv[ply][0] = mv;
-                let child_len = self.pv_len[ply + 1].min(MAX_PLY - ply - 1);
-                for index in 0..child_len {
-                    self.pv[ply][index + 1] = self.pv[ply + 1][index];
+            if value > best {
+                best = value;
+                if value > alpha {
+                    best_move = mv;
+                    if PV {
+                        self.pv[ply][0] = mv;
+                        let child_len = self.pv_len[ply + 1].min(MAX_PLY - ply - 1);
+                        for index in 0..child_len {
+                            self.pv[ply][index + 1] = self.pv[ply + 1][index];
+                        }
+                        self.pv_len[ply] = child_len + 1;
+                    }
+                    if PV && value < beta {
+                        alpha = value;
+                    } else {
+                        break;
+                    }
                 }
-                self.pv_len[ply] = child_len + 1;
             }
-            if alpha >= beta {
-                break;
-            }
+        }
+        if in_check && best == -INF {
+            return -MATE + ply as i32;
         }
         self.tt.store(
             key,
-            ply,
             Record {
                 mv: best_move,
-                score: best,
+                score: value_to_tt(best, ply),
                 eval: raw_eval,
-                depth: 0,
+                depth: tt_depth,
                 bound: if best >= beta {
                     Bound::Lower
-                } else if best <= original_alpha {
-                    Bound::Upper
                 } else {
-                    Bound::Exact
+                    Bound::Upper
                 },
-                pv: false,
-                age: 0,
+                pv: pv_hit,
             },
         );
         best
     }
-
-    fn move_score(&self, mv: Move, preferred: Option<Move>, ply: usize) -> i32 {
-        if Some(mv) == preferred {
-            return 1_000_000;
-        }
-        if is_quiet(mv) {
-            if mv == self.killers[ply][0] {
-                return 90_000;
-            }
-            if mv == self.killers[ply][1] {
-                return 89_000;
-            }
-            if self
-                .previous_move(ply)
-                .is_some_and(|previous| self.counters[previous] == mv)
-            {
-                return 88_000;
-            }
-            let side = self.position.side_to_move().index();
-            let continuation = self
-                .continuation_index(mv, ply)
-                .map_or(0, |index| self.continuation[index]);
-            return self.history[side][mv.from().index()][mv.to().index()] + continuation;
-        }
-        let attacker = self
-            .position
-            .piece_at(mv.from())
-            .expect("legal move has mover");
-        let victim = if mv.flag() == 5 {
-            Some(PieceType::Pawn)
-        } else {
-            self.position.piece_at(mv.to()).map(|piece| piece.kind)
-        };
-        let gain = victim.map_or(0, |kind| {
-            VALUES[kind.index()] * 16 - VALUES[attacker.kind.index()]
-        }) + mv.promotion().map_or(0, |kind| VALUES[kind.index()]);
-        if self.position.see_ge(mv, 0) {
-            200_000 + gain
-        } else {
-            -200_000 + gain
-        }
-    }
-
-    fn order(&mut self, preferred: Option<Move>, ply: usize) {
-        for index in 0..self.lists[ply].len() {
-            let score = self.move_score(self.lists[ply].get(index), preferred, ply);
-            self.lists[ply].set_score(index, score);
-        }
-        self.lists[ply].sort_by_score();
-    }
-}
-
-/// Late move reductions grow with the logarithm of both depth and move number, the form
-/// most engines converged on after Stockfish; the divisor sets how aggressive it is.
-fn reduction_table() -> [[u8; 64]; 64] {
-    let mut table = [[0; 64]; 64];
-    for (depth, row) in table.iter_mut().enumerate().skip(1) {
-        for (index, cell) in row.iter_mut().enumerate().skip(1) {
-            *cell = (0.75 + (depth as f64).ln() * (index as f64).ln() / 2.25) as u8;
-        }
-    }
-    table
-}
-
-fn is_quiet(mv: Move) -> bool {
-    mv.flag() & 4 == 0 && mv.promotion().is_none()
 }
 
 /// Win, draw and loss chances in permille for the side to move. The logistic model

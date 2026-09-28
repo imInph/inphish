@@ -246,7 +246,7 @@ impl Engine {
                 let depth = words
                     .get(1)
                     .and_then(|word| word.parse::<u8>().ok())
-                    .unwrap_or(4);
+                    .unwrap_or(10);
                 if let Ok((nodes, nps)) = bench::measure(depth.max(1)) {
                     eprintln!("{nodes} nodes {nps} nps");
                 }

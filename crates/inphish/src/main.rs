@@ -27,7 +27,7 @@ fn run() -> Result<(), String> {
     if command == "bench" {
         let depth = args
             .next()
-            .map_or(Ok(4), |text| text.parse::<u8>())
+            .map_or(Ok(10), |text| text.parse::<u8>())
             .map_err(|_| usage())?;
         if args.next().is_some() || depth == 0 {
             return Err(usage());
