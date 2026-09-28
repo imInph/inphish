@@ -647,12 +647,12 @@ const STRENGTH_LINES: usize = 4;
 /// matches against Stockfish 19 at the same `UCI_Elo`; settings between two points
 /// interpolate linearly.
 const STRENGTH_CURVE: [(u16, f64); 6] = [
-    (1320, 7.4),
-    (1600, 8.4),
-    (2200, 10.3),
+    (1320, 6.7),
+    (1600, 8.2),
+    (2200, 10.15),
     (2600, 11.0),
-    (2800, 12.8),
-    (3000, 14.6),
+    (2800, 12.45),
+    (3000, 13.7),
 ];
 
 fn strength_nodes(elo: u16) -> u64 {
