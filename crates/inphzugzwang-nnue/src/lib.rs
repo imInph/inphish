@@ -1500,6 +1500,8 @@ fn products_scalar<const ROWS: usize>(input: &[u8], weights: &[i8]) -> [i32; ROW
 }
 
 mod simd {
+    #[cfg(target_arch = "x86_64")]
+    use super::GROUP_SLOTS;
     use super::{Rows, FC0_OUTPUTS, HALF};
 
     #[cfg(target_arch = "aarch64")]
