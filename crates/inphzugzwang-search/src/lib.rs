@@ -119,6 +119,10 @@ struct Search<'a> {
     /// Ply below which null moves stay off for `nmp_side` during a verification search.
     nmp_min_ply: usize,
     nmp_side: usize,
+    /// Times a later root move replaced the best one, for time management; only the
+    /// first line counts.
+    best_move_changes: u32,
+    counting_changes: bool,
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
     accumulators: Box<[Accumulator]>,
@@ -262,7 +266,6 @@ fn iterate(
         };
     }
     let mut best = fallback;
-    let mut stable_best = 0_u8;
     let reported = worker.limits.multipv.clamp(1, candidates.len());
     let line_count = if worker.limits.strength.is_some() {
         reported.max(STRENGTH_LINES).min(candidates.len())
@@ -276,6 +279,14 @@ fn iterate(
         .unwrap_or((MAX_PLY - 1) as u8)
         .min((MAX_PLY - 1) as u8);
     let mut ordered = candidates.clone();
+    // Time management state after Stockfish: recent iteration scores, the depth where
+    // the best move last changed and a decaying count of best-move changes.
+    let (previous_score, previous_reduction) = worker.tt.previous_search();
+    let mut iteration_scores = [previous_score.unwrap_or(0); 4];
+    let mut iteration_index = 0;
+    let mut last_change_depth = 0;
+    let mut changes = 0.0;
+    let mut time_reduction = 1.0;
     for depth in 1..=max_depth {
         if worker.should_stop() {
             break;
@@ -287,12 +298,9 @@ fn iterate(
         if worker.aborted || best_score == -INF {
             break;
         }
-        let score_drop = completed.depth > 0 && completed.score - best_score > 80;
-        stable_best = if completed.depth > 0 && best == iteration_best {
-            stable_best.saturating_add(1)
-        } else {
-            0
-        };
+        if iteration_best != best || completed.depth == 0 {
+            last_change_depth = i32::from(depth);
+        }
         best = iteration_best.or(best);
         worker.completed_depth = i32::from(depth);
         completed = Info {
@@ -323,22 +331,34 @@ fn iterate(
         {
             break;
         }
-        let best_fraction =
-            best_move_nodes.saturating_mul(100) / (worker.nodes - iteration_start_nodes).max(1);
-        let scale =
-            (100_i32 + if score_drop { 40 } else { 0 } + if best_fraction > 70 { 20 } else { 0 }
-                - if stable_best >= 4 {
-                    25
-                } else if stable_best >= 2 {
-                    15
-                } else {
-                    0
-                })
-            .clamp(75, 160) as u32;
-        if worker.soft_expired(scale) {
-            break;
+        changes = changes / 2.0 + f64::from(std::mem::take(&mut worker.best_move_changes));
+        if let (Some(elapsed), Some(optimum)) = (worker.timed_elapsed(), worker.limits.soft) {
+            // Think longer when the score falls or the best move keeps changing, and less
+            // when it has stood for many iterations.
+            let internal = |score: i32| f64::from(score) * 2.08;
+            let falling = ((11.396
+                + 2.035 * (internal(previous_score.unwrap_or(best_score)) - internal(best_score))
+                + 0.968 * (internal(iteration_scores[iteration_index]) - internal(best_score)))
+                / 100.0)
+                .clamp(0.5786, 1.6752);
+            let settled = f64::from(worker.completed_depth - (last_change_depth + 11));
+            time_reduction = 0.8 + 0.84 / (1.077 + (-0.527 * settled).exp());
+            let reduction = (1.454 + previous_reduction) / (2.1593 * time_reduction);
+            let instability = 0.9929 + 1.8519 * changes / worker.limits.threads.max(1) as f64;
+            let total = optimum.as_secs_f64() * 1000.0 * falling * reduction * instability;
+            let effort = best_move_nodes.saturating_mul(100_000)
+                / (worker.nodes - iteration_start_nodes).max(1);
+            if elapsed > total || (depth >= 10 && effort >= 97_056 && elapsed > total * 0.654) {
+                break;
+            }
         }
+        iteration_scores[iteration_index] = best_score;
+        iteration_index = (iteration_index + 1) & 3;
     }
+    worker.tt.set_previous_search(
+        (completed.depth > 0).then_some(completed.score),
+        time_reduction,
+    );
     while !worker.aborted
         && (worker.limits.infinite
             || (worker.limits.ponder && !worker.control.ponderhit.load(Ordering::Relaxed)))
@@ -661,6 +681,8 @@ impl<'a> Search<'a> {
             root_delta: 1,
             nmp_min_ply: 0,
             nmp_side: 0,
+            best_move_changes: 0,
+            counting_changes: true,
             pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
             pv_len: [0; MAX_PLY],
             accumulators,
@@ -831,7 +853,9 @@ impl<'a> Search<'a> {
             if let Some(position) = remaining.iter().position(|&mv| Some(mv) == previous) {
                 remaining[..=position].rotate_right(1);
             }
+            self.counting_changes = false;
             let (score, mv, _) = self.search_root(i32::from(depth), &mut remaining, -INF, INF);
+            self.counting_changes = true;
             let Some(mv) = mv.filter(|_| !self.aborted && score > -INF) else {
                 return;
             };
@@ -969,6 +993,9 @@ impl<'a> Search<'a> {
             }
             highest = highest.max(score);
             if index == 0 || score > alpha {
+                if index > 0 && self.counting_changes {
+                    self.best_move_changes += 1;
+                }
                 scores[index] = score;
                 best = Some(mv);
                 best_nodes = self.nodes - before;
@@ -1024,18 +1051,14 @@ impl<'a> Search<'a> {
         false
     }
 
-    fn soft_expired(&mut self, scale: u32) -> bool {
+    /// Milliseconds since the clock started running for this search, when it is timed.
+    fn timed_elapsed(&mut self) -> Option<f64> {
         self.refresh_ponder();
-        if self.limits.infinite || self.timed_started.is_none() {
-            return false;
+        if self.limits.infinite {
+            return None;
         }
-        self.limits.soft.is_some_and(|soft| {
-            self.timed_started
-                .expect("timed search")
-                .elapsed()
-                .as_millis()
-                >= soft.as_millis().saturating_mul(scale as u128) / 100
-        })
+        self.timed_started
+            .map(|started| started.elapsed().as_secs_f64() * 1000.0)
     }
 
     fn visit(&mut self, ply: usize) -> bool {

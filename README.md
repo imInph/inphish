@@ -37,7 +37,7 @@ On macOS, a downloaded binary may need `xattr -d com.apple.quarantine inphish` b
 | `Hash` | 16 | Transposition table size in MiB, 1 to 1024 |
 | `Clear Hash` | | Button |
 | `Threads` | 1 | Lazy SMP, 1 to 256 |
-| `Move Overhead` | 20 | Milliseconds reserved per move for GUI and network lag |
+| `Move Overhead` | 10 | Milliseconds reserved per move for GUI and network lag |
 | `MultiPV` | 1 | Number of principal variations, 1 to 256 |
 | `UCI_LimitStrength` | false | Enables `UCI_Elo` |
 | `UCI_Elo` | 3000 | 1320 to 3000, approximate |

@@ -79,7 +79,7 @@ pub fn run() -> io::Result<()> {
         next_id: 0,
         pending: None,
         quitting: false,
-        overhead: 20,
+        overhead: 10,
         hash_mb: 16,
         hash: Arc::new(TranspositionTable::new(16).expect("default hash allocation failed")),
         multipv: 1,
@@ -165,7 +165,7 @@ impl Engine {
                 write_line(out, "id author inph")?;
                 write_line(
                     out,
-                    "option name Move Overhead type spin default 20 min 0 max 5000",
+                    "option name Move Overhead type spin default 10 min 0 max 5000",
                 )?;
                 write_line(out, "option name Hash type spin default 16 min 1 max 1024")?;
                 write_line(out, "option name Clear Hash type button")?;
@@ -483,7 +483,7 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
     let mut btime = None;
     let mut winc = 0;
     let mut binc = 0;
-    let mut movestogo = 30;
+    let mut movestogo = None;
     let mut movetime = None;
     let mut index = 0;
     while index < words.len() {
@@ -519,7 +519,7 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
             "btime" => btime = value,
             "winc" => winc = value.unwrap_or(0),
             "binc" => binc = value.unwrap_or(0),
-            "movestogo" => movestogo = value.unwrap_or(30).clamp(1, 100),
+            "movestogo" => movestogo = value.map(|moves| moves.clamp(1, 100)),
             "depth" => limits.depth = value.map(|n| n.clamp(1, 127) as u8),
             "nodes" => limits.nodes = value.map(|n| n.max(1)),
             "mate" => limits.depth = value.map(|n| n.saturating_mul(2).clamp(1, 127) as u8),
@@ -549,18 +549,55 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
                 // Spawning the search thread costs microseconds, so only a clock already inside the
                 // overhead margin skips the search; anything more still buys a few plies.
                 limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(30);
-                let safe = remaining.saturating_sub(overhead).max(1);
-                let target = (safe / movestogo).saturating_add(increment.saturating_mul(3) / 4);
-                let soft = target.clamp(1, (safe.saturating_mul(2) / 5).max(1));
-                let hard = target
-                    .saturating_mul(3)
-                    .clamp(soft, (safe.saturating_mul(3) / 4).max(soft));
-                limits.soft = Some(Duration::from_millis(soft));
-                limits.hard = Some(Duration::from_millis(hard));
+                let (optimum, maximum) = allocate(
+                    remaining,
+                    increment,
+                    movestogo,
+                    overhead,
+                    position.game_ply(),
+                );
+                limits.soft = Some(Duration::from_millis(optimum));
+                limits.hard = Some(Duration::from_millis(maximum));
             }
         }
     }
     limits
+}
+
+/// Stockfish's time allocation: an optimum the search aims for, which it scales by how
+/// settled the best move is, and a maximum it never exceeds, from the clock, increment,
+/// moves to go (up to 50 assumed) and game ply, all in milliseconds.
+fn allocate(
+    time: u64,
+    increment: u64,
+    movestogo: Option<u64>,
+    overhead: u64,
+    ply: u32,
+) -> (u64, u64) {
+    let (time_ms, increment, overhead) = (time as f64, increment as f64, overhead as f64);
+    let horizon = movestogo.map_or(50.0, |moves| moves.min(50) as f64);
+    let left = (time_ms + increment * (horizon - 1.0) - overhead * (2.0 + horizon)).max(1.0);
+    let ply = f64::from(ply);
+    let (optimum_scale, maximum_scale) = if movestogo.is_none() {
+        let log_time = (time_ms / 1000.0).max(0.001).log10();
+        let optimum_constant = (0.00308 + 0.000319 * log_time).min(0.00506);
+        let maximum_constant = (3.39 + 3.01 * log_time).max(2.93);
+        (
+            (0.0122 + (ply + 2.95).powf(0.462) * optimum_constant).min(0.213 * time_ms / left),
+            (maximum_constant + ply / 12.0).min(6.64),
+        )
+    } else {
+        (
+            ((0.88 + ply / 116.4) / horizon).min(0.88 * time_ms / left),
+            (1.3 + 0.11 * horizon).min(8.45),
+        )
+    };
+    let optimum = optimum_scale * left;
+    // Never past 82.5% of the clock, and always a margin short of it.
+    let ceiling = (time_ms - overhead - 5.0).max(1.0);
+    let maximum =
+        ((0.825 * time_ms - overhead).min(maximum_scale * optimum) - 10.0).clamp(1.0, ceiling);
+    (optimum.clamp(1.0, maximum) as u64, maximum as u64)
 }
 
 fn is_go_key(word: &str) -> bool {

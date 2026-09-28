@@ -88,6 +88,8 @@ pub struct TranspositionTable {
     clusters: Box<[Cluster]>,
     age: AtomicU8,
     memories: Mutex<Vec<Memory>>,
+    /// The last search's score and time reduction, which time management carries over.
+    previous: Mutex<(Option<i32>, f64)>,
 }
 
 impl TranspositionTable {
@@ -103,6 +105,7 @@ impl TranspositionTable {
             clusters: clusters.into_boxed_slice(),
             age: AtomicU8::new(0),
             memories: Mutex::new(Vec::new()),
+            previous: Mutex::new((None, 1.0)),
         })
     }
 
@@ -113,6 +116,18 @@ impl TranspositionTable {
             .ok()
             .and_then(|mut memories| memories.pop())
             .unwrap_or_else(Memory::new)
+    }
+
+    pub(super) fn previous_search(&self) -> (Option<i32>, f64) {
+        self.previous
+            .lock()
+            .map_or((None, 1.0), |previous| *previous)
+    }
+
+    pub(super) fn set_previous_search(&self, score: Option<i32>, time_reduction: f64) {
+        if let Ok(mut previous) = self.previous.lock() {
+            *previous = (score, time_reduction);
+        }
     }
 
     /// Keeps a search thread's statistics for the next search.
