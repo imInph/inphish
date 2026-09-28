@@ -4,6 +4,14 @@ use crate::attacks::{between, line};
 use crate::{bishop_attacks, king_attacks, knight_attacks, pawn_attacks, rook_attacks};
 use crate::{Bitboard, CastlingRights, Color, Move, MoveFlag, MoveList, Piece, PieceType, Square};
 
+/// Which legal moves a generation pass produces.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Generate {
+    All,
+    Tactical,
+    Quiet,
+}
+
 pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const MAX_HISTORY: usize = 16_384;
 
@@ -404,7 +412,7 @@ impl Position {
 
     pub fn legal_moves(&self) -> MoveList {
         let mut moves = MoveList::new();
-        self.generate_legal_moves(false, &mut moves);
+        self.generate_legal_moves(Generate::All, &mut moves);
         moves
     }
 
@@ -417,15 +425,29 @@ impl Position {
     /// Fills `moves` with the legal moves, replacing its contents. Reusing one list avoids
     /// initialising and copying a fresh one at every node.
     pub fn generate_moves(&self, moves: &mut MoveList) {
-        self.generate_legal_moves(false, moves);
+        self.generate_legal_moves(Generate::All, moves);
     }
 
-    /// Fills `moves` with the legal captures and promotions, or every evasion in check.
+    /// Fills `moves` with the legal captures and queen promotions, or every evasion in check.
     pub fn generate_tactical_moves(&self, moves: &mut MoveList) {
-        self.generate_legal_moves(self.state.checkers.0 == 0, moves);
+        let mode = if self.state.checkers.0 == 0 {
+            Generate::Tactical
+        } else {
+            Generate::All
+        };
+        self.generate_legal_moves(mode, moves);
     }
 
-    fn generate_legal_moves(&self, tactical_only: bool, moves: &mut MoveList) {
+    /// Fills `moves` with the legal moves that `generate_tactical_moves` leaves out when
+    /// not in check: non-captures other than queen promotions, castling included.
+    pub fn generate_quiet_moves(&self, moves: &mut MoveList) {
+        debug_assert_eq!(self.state.checkers.0, 0);
+        self.generate_legal_moves(Generate::Quiet, moves);
+    }
+
+    fn generate_legal_moves(&self, mode: Generate, moves: &mut MoveList) {
+        let tactical_only = mode == Generate::Tactical;
+        let quiet_only = mode == Generate::Quiet;
         moves.clear();
         let side = self.state.side;
         let enemy = side.other();
@@ -434,7 +456,7 @@ impl Position {
         let occupancy = own | theirs;
         let king = self.king(side);
         for to in king_attacks(king) & !own {
-            if tactical_only && !theirs.contains(to) {
+            if (tactical_only && !theirs.contains(to)) || (quiet_only && theirs.contains(to)) {
                 continue;
             }
             let after = Bitboard((occupancy.0 & !king.bit().0 & !to.bit().0) | to.bit().0);
@@ -476,9 +498,18 @@ impl Position {
                 let to = Square(destination as u8);
                 if !occupancy.contains(to) {
                     if check_mask.contains(to) && pinned_line.contains(to) {
+                        let promotes = to.rank() == 0 || to.rank() == 7;
                         if tactical_only {
-                            if to.rank() == 0 || to.rank() == 7 {
+                            if promotes {
                                 moves.push(Move::new(from, to, MoveFlag::QueenPromotion));
+                            }
+                        } else if quiet_only && promotes {
+                            for flag in [
+                                MoveFlag::KnightPromotion,
+                                MoveFlag::BishopPromotion,
+                                MoveFlag::RookPromotion,
+                            ] {
+                                moves.push(Move::new(from, to, flag));
                             }
                         } else {
                             self.push_pawn_move(moves, from, to, false);
@@ -495,6 +526,9 @@ impl Position {
                         }
                     }
                 }
+            }
+            if quiet_only {
+                continue;
             }
             for to in pawn_attacks(side, from) & theirs & check_mask & pinned_line {
                 self.push_pawn_move(moves, from, to, true);
@@ -531,7 +565,11 @@ impl Position {
                 } else {
                     Bitboard(!0)
                 };
-                let targets = if tactical_only { theirs } else { !own };
+                let targets = match mode {
+                    Generate::All => !own,
+                    Generate::Tactical => theirs,
+                    Generate::Quiet => !occupancy,
+                };
                 for to in attacks & targets & check_mask & allowed {
                     moves.push(Move::new(
                         from,
@@ -644,6 +682,37 @@ impl Position {
 
     pub fn is_legal(&self, mv: Move) -> bool {
         self.legal_moves().iter().any(|candidate| candidate == mv)
+    }
+
+    /// Whether `mv`, typically remembered from another position, is legal here, without
+    /// generating the moves except for the rare castling and en passant cases.
+    pub fn is_legal_move(&self, mv: Move) -> bool {
+        if mv == Move::NULL || !self.is_pseudo_legal(mv) {
+            return false;
+        }
+        if mv.is_castle() || mv.flag() == MoveFlag::EnPassant as u8 {
+            return self.is_legal(mv);
+        }
+        let side = self.state.side;
+        let king = self.king(side);
+        let (from, to) = (mv.from(), mv.to());
+        if from == king {
+            let after = Bitboard((self.occupied().0 & !from.bit().0) | to.bit().0);
+            let captured = self.state.colors[side.other().index()]
+                .contains(to)
+                .then_some(to);
+            return !self.is_attacked(to, side.other(), after, captured);
+        }
+        let checkers = self.state.checkers;
+        if checkers.count() > 1 {
+            return false;
+        }
+        if let Some(checker) = checkers.into_iter().next() {
+            if !(checker.bit() | between(king, checker)).contains(to) {
+                return false;
+            }
+        }
+        !self.state.pinned.contains(from) || line(king, from).contains(to)
     }
 
     pub fn is_pseudo_legal(&self, mv: Move) -> bool {
@@ -984,7 +1053,8 @@ impl Position {
     /// nets at least `threshold` for the side to move, using the swap-list shortcut with
     /// x-ray attackers revealed as occupancy shrinks. Pins are ignored, as is usual.
     pub fn see_ge(&self, mv: Move, threshold: i32) -> bool {
-        const SEE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 20_000];
+        // Stockfish's middlegame piece values, the scale its pruning thresholds assume.
+        const SEE_VALUES: [i32; 6] = [126, 781, 825, 1276, 2538, 20_000];
         if mv.is_castle() {
             return threshold <= 0;
         }

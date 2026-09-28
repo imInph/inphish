@@ -1,4 +1,5 @@
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -279,8 +280,10 @@ pub struct ScoredMove {
     pub score: i32,
 }
 
+/// Up to 256 moves with scores. Entries past `len` are never read, so creating a list
+/// leaves its storage uninitialised and costs nothing.
 pub struct MoveList {
-    moves: [ScoredMove; 256],
+    moves: [MaybeUninit<ScoredMove>; 256],
     len: usize,
 }
 
@@ -290,20 +293,26 @@ impl Default for MoveList {
     }
 }
 
+impl Clone for MoveList {
+    fn clone(&self) -> Self {
+        let mut copy = Self::new();
+        copy.moves[..self.len].copy_from_slice(&self.moves[..self.len]);
+        copy.len = self.len;
+        copy
+    }
+}
+
 impl MoveList {
     pub const fn new() -> Self {
         Self {
-            moves: [ScoredMove {
-                mv: Move::NULL,
-                score: 0,
-            }; 256],
+            moves: [MaybeUninit::uninit(); 256],
             len: 0,
         }
     }
 
     pub fn push(&mut self, mv: Move) {
         assert!(self.len < self.moves.len(), "legal move list exceeds 256");
-        self.moves[self.len] = ScoredMove { mv, score: 0 };
+        self.moves[self.len].write(ScoredMove { mv, score: 0 });
         self.len += 1;
     }
 
@@ -311,39 +320,49 @@ impl MoveList {
         self.len = 0;
     }
 
+    pub fn entries(&self) -> &[ScoredMove] {
+        // SAFETY: the first `len` entries were written by `push`.
+        unsafe { std::slice::from_raw_parts(self.moves.as_ptr().cast(), self.len) }
+    }
+
+    pub fn entries_mut(&mut self) -> &mut [ScoredMove] {
+        // SAFETY: as in `entries`.
+        unsafe { std::slice::from_raw_parts_mut(self.moves.as_mut_ptr().cast(), self.len) }
+    }
+
     pub fn get(&self, index: usize) -> Move {
-        self.moves[..self.len][index].mv
+        self.entries()[index].mv
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Move> + '_ {
-        self.moves[..self.len].iter().map(|entry| entry.mv)
+        self.entries().iter().map(|entry| entry.mv)
     }
 
     pub fn score(&self, index: usize) -> Option<i32> {
-        self.moves
-            .get(index)
-            .filter(|_| index < self.len)
-            .map(|entry| entry.score)
+        self.entries().get(index).map(|entry| entry.score)
     }
 
     pub fn set_score(&mut self, index: usize, score: i32) -> bool {
-        if index >= self.len {
-            return false;
+        match self.entries_mut().get_mut(index) {
+            Some(entry) => {
+                entry.score = score;
+                true
+            }
+            None => false,
         }
-        self.moves[index].score = score;
-        true
     }
 
     pub fn sort_by_key(&mut self, mut score: impl FnMut(Move) -> i32) {
-        for entry in &mut self.moves[..self.len] {
+        for entry in self.entries_mut() {
             entry.score = score(entry.mv);
         }
-        self.moves[..self.len].sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
+        self.sort_by_score();
     }
 
     /// Sorts by the scores already set, highest first.
     pub fn sort_by_score(&mut self) {
-        self.moves[..self.len].sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
+        self.entries_mut()
+            .sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
     }
 
     pub const fn len(&self) -> usize {

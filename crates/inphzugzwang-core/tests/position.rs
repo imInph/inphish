@@ -1,4 +1,4 @@
-use inphzugzwang_core::{Color, PieceType, Position, Square, START_FEN};
+use inphzugzwang_core::{Color, Move, MoveList, PieceType, Position, Square, START_FEN};
 
 #[test]
 fn tactical_generation_matches_legal_move_filter() {
@@ -25,6 +25,49 @@ fn tactical_generation_matches_legal_move_filter() {
         expected.sort_unstable();
         actual.sort_unstable();
         assert_eq!(actual, expected, "{fen}");
+    }
+}
+
+#[test]
+fn quiet_and_tactical_generation_partition_the_legal_moves() {
+    let mut position = Position::startpos();
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    for _ in 0..400 {
+        let moves = position.legal_moves();
+        if moves.is_empty() {
+            position = Position::startpos();
+            continue;
+        }
+        if position.checkers().0 == 0 {
+            let mut quiet = MoveList::new();
+            position.generate_quiet_moves(&mut quiet);
+            let mut split: Vec<_> = position
+                .tactical_moves()
+                .iter()
+                .chain(quiet.iter())
+                .map(|mv| mv.raw())
+                .collect();
+            let mut all: Vec<_> = moves.iter().map(|mv| mv.raw()).collect();
+            split.sort_unstable();
+            all.sort_unstable();
+            assert_eq!(split, all, "{}", position.fen());
+        }
+        for raw in 0..=u16::MAX {
+            let mv = Move::from_raw(raw);
+            if position.is_pseudo_legal(mv) {
+                assert_eq!(
+                    position.is_legal_move(mv),
+                    moves.iter().any(|legal| legal == mv),
+                    "{} {raw}",
+                    position.fen()
+                );
+            }
+        }
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let mv = moves.get(seed as usize % moves.len());
+        position.make(mv);
     }
 }
 
@@ -218,13 +261,13 @@ fn static_exchange_follows_the_capture_sequence() {
         (
             "1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - 0 1",
             "e1e5",
-            100,
+            126,
             true,
         ),
         (
             "1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - 0 1",
             "e1e5",
-            101,
+            127,
             false,
         ),
         (
@@ -236,12 +279,12 @@ fn static_exchange_follows_the_capture_sequence() {
         (
             "1k1r3q/1ppn3p/p4b2/4p3/8/P2N2P1/1PP1R1BP/2K1Q3 w - - 0 1",
             "d3e5",
-            -220,
+            -655,
             true,
         ),
-        ("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 100, true),
+        ("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 126, true),
         ("4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 1, false),
-        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 100, true),
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 126, true),
         ("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", "e1g1", 0, true),
     ];
     for (fen, text, threshold, expected) in cases {
