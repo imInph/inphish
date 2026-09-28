@@ -4,7 +4,8 @@
 //! do not lose too much, quiet moves with good histories, the losing captures, then the
 //! remaining quiet moves. Check evasions, ProbCut captures and the captures of the
 //! quiescence search have stages of their own. The generators produce legal moves only,
-//! so no stage needs a legality check.
+//! so no stage needs a legality check. The move lists are lent to each call rather than
+//! owned, so that a node does not set up kilobytes of storage it may never fill.
 
 use inphzugzwang_core::{
     bishop_attacks, knight_attacks, pawn_attacks, rook_attacks, Bitboard, Move, MoveFlag, MoveList,
@@ -105,12 +106,13 @@ pub(super) struct Picker {
     /// Continuation tables of the moves one to six plies earlier.
     continuations: [usize; 6],
     skip_quiets: bool,
-    captures: MoveList,
     current: usize,
     bad_end: usize,
-    quiets: MoveList,
     quiet_current: usize,
 }
+
+/// The captures and the quiet moves of one picker.
+pub(super) type Lists = [MoveList; 2];
 
 impl Picker {
     fn new(stage: Stage, table_move: Move, depth: i32) -> Self {
@@ -127,10 +129,8 @@ impl Picker {
             pawn_key: 0,
             continuations: [0; 6],
             skip_quiets: false,
-            captures: MoveList::new(),
             current: 0,
             bad_end: 0,
-            quiets: MoveList::new(),
             quiet_current: 0,
         }
     }
@@ -174,7 +174,14 @@ impl Picker {
         self.skip_quiets = true;
     }
 
-    pub(super) fn next(&mut self, position: &Position, histories: &Histories) -> Option<Move> {
+    /// The next move, or `None` when all are out. Every call must lend the same lists.
+    pub(super) fn next(
+        &mut self,
+        position: &Position,
+        histories: &Histories,
+        lists: &mut Lists,
+    ) -> Option<Move> {
+        let [captures, quiets] = lists;
         loop {
             match self.stage {
                 Stage::MainTable
@@ -185,9 +192,9 @@ impl Picker {
                     return Some(self.table_move);
                 }
                 Stage::CaptureInit | Stage::ProbCutInit | Stage::QuiescenceInit => {
-                    position.generate_tactical_moves(&mut self.captures);
-                    self.score_captures(position, histories);
-                    partial_insertion_sort(&mut self.captures, i32::MIN);
+                    position.generate_tactical_moves(captures);
+                    score_captures(captures, position, histories);
+                    partial_insertion_sort(captures, i32::MIN);
                     self.current = 0;
                     self.bad_end = 0;
                     self.stage = match self.stage {
@@ -197,8 +204,8 @@ impl Picker {
                     };
                 }
                 Stage::GoodCapture => {
-                    while self.current < self.captures.len() {
-                        let entry = self.captures.entries()[self.current];
+                    while self.current < captures.len() {
+                        let entry = captures.entries()[self.current];
                         self.current += 1;
                         if entry.mv == self.table_move {
                             continue;
@@ -207,24 +214,24 @@ impl Picker {
                             return Some(entry.mv);
                         }
                         // A losing capture waits at the front of the list for a later stage.
-                        self.captures.entries_mut()[self.bad_end] = entry;
+                        captures.entries_mut()[self.bad_end] = entry;
                         self.bad_end += 1;
                     }
                     self.stage = Stage::QuietInit;
                 }
                 Stage::QuietInit => {
                     if !self.skip_quiets {
-                        position.generate_quiet_moves(&mut self.quiets);
-                        self.score_quiets(position, histories);
-                        partial_insertion_sort(&mut self.quiets, -3560 * self.depth);
+                        position.generate_quiet_moves(quiets);
+                        self.score_quiets(quiets, position, histories);
+                        partial_insertion_sort(quiets, -3560 * self.depth);
                     }
                     self.quiet_current = 0;
                     self.stage = Stage::GoodQuiet;
                 }
                 Stage::GoodQuiet => {
                     if !self.skip_quiets {
-                        while self.quiet_current < self.quiets.len() {
-                            let entry = self.quiets.entries()[self.quiet_current];
+                        while self.quiet_current < quiets.len() {
+                            let entry = quiets.entries()[self.quiet_current];
                             self.quiet_current += 1;
                             if entry.mv != self.table_move && entry.score > GOOD_QUIET {
                                 return Some(entry.mv);
@@ -237,15 +244,15 @@ impl Picker {
                 Stage::BadCapture => {
                     if self.current < self.bad_end {
                         self.current += 1;
-                        return Some(self.captures.get(self.current - 1));
+                        return Some(captures.get(self.current - 1));
                     }
                     self.quiet_current = 0;
                     self.stage = Stage::BadQuiet;
                 }
                 Stage::BadQuiet => {
                     if !self.skip_quiets {
-                        while self.quiet_current < self.quiets.len() {
-                            let entry = self.quiets.entries()[self.quiet_current];
+                        while self.quiet_current < quiets.len() {
+                            let entry = quiets.entries()[self.quiet_current];
                             self.quiet_current += 1;
                             if entry.mv != self.table_move && entry.score <= GOOD_QUIET {
                                 return Some(entry.mv);
@@ -255,15 +262,15 @@ impl Picker {
                     self.stage = Stage::Done;
                 }
                 Stage::EvasionInit => {
-                    position.generate_moves(&mut self.captures);
-                    self.score_evasions(position, histories);
-                    partial_insertion_sort(&mut self.captures, i32::MIN);
+                    position.generate_moves(captures);
+                    self.score_evasions(captures, position, histories);
+                    partial_insertion_sort(captures, i32::MIN);
                     self.current = 0;
                     self.stage = Stage::Evasion;
                 }
                 Stage::Evasion | Stage::QuiescenceCapture => {
-                    while self.current < self.captures.len() {
-                        let mv = self.captures.get(self.current);
+                    while self.current < captures.len() {
+                        let mv = captures.get(self.current);
                         self.current += 1;
                         if mv != self.table_move {
                             return Some(mv);
@@ -272,8 +279,8 @@ impl Picker {
                     self.stage = Stage::Done;
                 }
                 Stage::ProbCut => {
-                    while self.current < self.captures.len() {
-                        let mv = self.captures.get(self.current);
+                    while self.current < captures.len() {
+                        let mv = captures.get(self.current);
                         self.current += 1;
                         if mv != self.table_move && position.see_ge(mv, self.threshold) {
                             return Some(mv);
@@ -286,18 +293,9 @@ impl Picker {
         }
     }
 
-    /// Capture history plus seven times the victim's value.
-    fn score_captures(&mut self, position: &Position, histories: &Histories) {
-        for entry in self.captures.entries_mut() {
-            let target = target(position, entry.mv);
-            entry.score = histories.capture(moved_square(position, entry.mv), victim_slot(target))
-                + 7 * victim_value(target);
-        }
-    }
-
     /// Histories, a bonus for a safe check, a term for leaving or entering squares that
     /// lesser enemy pieces attack, and the low-ply history near the root.
-    fn score_quiets(&mut self, position: &Position, histories: &Histories) {
+    fn score_quiets(&self, quiets: &mut MoveList, position: &Position, histories: &Histories) {
         let us = position.side_to_move();
         let them = us.other();
         let occupied = position.occupied();
@@ -337,7 +335,7 @@ impl Picker {
         let side = us.index();
         let [one, two, three, four, _, six] = self.continuations;
         let (ply, pawn_key) = (self.ply, self.pawn_key);
-        for entry in self.quiets.entries_mut() {
+        for entry in quiets.entries_mut() {
             let mv = entry.mv;
             let (from, to) = (mv.from(), mv.to());
             let kind = position.piece_at(from).expect("a move has a mover").kind;
@@ -365,10 +363,10 @@ impl Picker {
 
     /// Captures and queen promotions by victim ahead of all quiet moves, which follow
     /// their butterfly and last-move histories.
-    fn score_evasions(&mut self, position: &Position, histories: &Histories) {
+    fn score_evasions(&self, moves: &mut MoveList, position: &Position, histories: &Histories) {
         let side = position.side_to_move().index();
         let previous = self.continuations[0];
-        for entry in self.captures.entries_mut() {
+        for entry in moves.entries_mut() {
             let mv = entry.mv;
             entry.score = if is_capture_stage(mv) {
                 victim_value(target(position, mv)) + (1 << 28)
@@ -377,6 +375,15 @@ impl Picker {
                     + histories.continuation(previous, moved_square(position, mv))
             };
         }
+    }
+}
+
+/// Capture history plus seven times the value on the destination square.
+fn score_captures(captures: &mut MoveList, position: &Position, histories: &Histories) {
+    for entry in captures.entries_mut() {
+        let target = target(position, entry.mv);
+        entry.score = histories.capture(moved_square(position, entry.mv), victim_slot(target))
+            + 7 * victim_value(target);
     }
 }
 
@@ -407,7 +414,8 @@ mod tests {
 
     fn all(picker: &mut Picker, position: &Position, histories: &Histories) -> Vec<u16> {
         let mut moves = Vec::new();
-        while let Some(mv) = picker.next(position, histories) {
+        let mut lists = [MoveList::new(), MoveList::new()];
+        while let Some(mv) = picker.next(position, histories, &mut lists) {
             moves.push(mv.raw());
         }
         moves

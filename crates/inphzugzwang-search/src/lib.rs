@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use inphzugzwang_core::{Bitboard, Color, Move, PieceType, Position};
+use inphzugzwang_core::{Bitboard, Color, Move, MoveList, PieceType, Position};
 use inphzugzwang_nnue::{network, Accumulator, RefreshCache, Update};
 use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
@@ -22,8 +22,8 @@ use history::{
     NO_PIECE_SQUARE, SENTINEL,
 };
 use picker::{
-    is_capture, is_capture_stage, moved_square, target, victim, victim_slot, victim_value, Picker,
-    PIECE_VALUES,
+    is_capture, is_capture_stage, moved_square, target, victim, victim_slot, victim_value, Lists,
+    Picker, PIECE_VALUES,
 };
 pub use tt::TranspositionTable;
 use tt::{Bound, Previous, Record};
@@ -143,15 +143,24 @@ pub struct Control {
 /// Statistics a search thread learns and keeps for later moves of the same game.
 pub(crate) struct Memory {
     histories: Histories,
+    /// Move lists for the pickers, three per ply: the node's own, that of a search of
+    /// the same node without its table move, and the quiescence search's.
+    lists: Box<[Lists]>,
 }
 
 impl Memory {
     fn new() -> Self {
         Self {
             histories: Histories::new(),
+            lists: (0..LIST_SLOTS * (MAX_PLY + 2))
+                .map(|_| [MoveList::new(), MoveList::new()])
+                .collect(),
         }
     }
 }
+
+/// Picker list slots per ply.
+const LIST_SLOTS: usize = 3;
 
 /// Stockfish's time allocation: an optimum the search aims for, which it scales by how
 /// settled the best move is, and a maximum it never exceeds, in milliseconds. Below one
@@ -758,6 +767,7 @@ impl Memory {
     fn empty() -> Self {
         Self {
             histories: Histories::empty(),
+            lists: Box::default(),
         }
     }
 }
@@ -1734,7 +1744,12 @@ impl<'a> Worker<'a> {
             {
                 let mut picker = Picker::probcut(tt_move, probcut_beta - static_eval);
                 let probcut_depth = depth - if improving { 5 } else { 3 };
-                while let Some(mv) = picker.next(&self.position, &self.memory.histories) {
+                let slot = LIST_SLOTS * ply + usize::from(excluded != Move::NULL);
+                while let Some(mv) = picker.next(
+                    &self.position,
+                    &self.memory.histories,
+                    &mut self.memory.lists[slot],
+                ) {
                     if mv == excluded {
                         continue;
                     }
@@ -1794,7 +1809,12 @@ impl<'a> Worker<'a> {
         let mut captures = [Move::NULL; SEARCHED_CAPACITY];
         let mut capture_count = 0;
         let own_material = non_pawn_material(&self.position, side);
-        while let Some(mv) = picker.next(&self.position, &self.memory.histories) {
+        let slot = LIST_SLOTS * ply + usize::from(excluded != Move::NULL);
+        while let Some(mv) = picker.next(
+            &self.position,
+            &self.memory.histories,
+            &mut self.memory.lists[slot],
+        ) {
             if mv == excluded {
                 continue;
             }
@@ -2302,7 +2322,12 @@ impl<'a> Worker<'a> {
         let mut picker = Picker::main(&self.position, tt_move, DEPTH_QS, ply, continuations);
         let mut best_move = Move::NULL;
         let mut move_count = 0;
-        while let Some(mv) = picker.next(&self.position, &self.memory.histories) {
+        let slot = LIST_SLOTS * ply + 2;
+        while let Some(mv) = picker.next(
+            &self.position,
+            &self.memory.histories,
+            &mut self.memory.lists[slot],
+        ) {
             let gives_check = self.position.gives_check(mv);
             let capture = is_capture_stage(mv);
             move_count += 1;
