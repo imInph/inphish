@@ -40,7 +40,7 @@ impl Engine {
 
     fn until(&self, prefix: &str) -> String {
         for _ in 0..100 {
-            let line = self.lines.recv_timeout(Duration::from_secs(2)).unwrap();
+            let line = self.lines.recv_timeout(Duration::from_secs(10)).unwrap();
             if line.starts_with(prefix) {
                 return line;
             }

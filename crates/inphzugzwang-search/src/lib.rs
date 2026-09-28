@@ -951,7 +951,13 @@ impl<'a> Worker<'a> {
         frame.correction_row = square;
         self.nodes += 1;
         if self.nodes & 1023 == 0 {
-            self.shared.nodes.fetch_add(1024, Ordering::Relaxed);
+            // Every thread checks a node limit as it adds a batch, so the total stops close
+            // to the limit even while the main thread, which checks more often, is waiting
+            // for a processor.
+            let total = self.shared.nodes.fetch_add(1024, Ordering::Relaxed) + 1024;
+            if self.limits.nodes.is_some_and(|limit| total >= limit) {
+                self.stop();
+            }
         }
         let dirty = self.memory.accumulators.push();
         self.position.make_recorded(mv, dirty);
