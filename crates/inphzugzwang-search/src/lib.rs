@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use inphzugzwang_core::{Bitboard, Color, Move, MoveList, PieceType, Position};
-use inphzugzwang_nnue::{network, Accumulator, RefreshCache, Update};
+use inphzugzwang_nnue::AccumulatorStack;
 use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
 mod history;
@@ -146,6 +146,7 @@ pub(crate) struct Memory {
     /// Move lists for the pickers, three per ply: the node's own, that of a search of
     /// the same node without its table move, and the quiescence search's.
     lists: Box<[Lists]>,
+    accumulators: AccumulatorStack,
 }
 
 impl Memory {
@@ -155,6 +156,7 @@ impl Memory {
             lists: (0..LIST_SLOTS * (MAX_PLY + 2))
                 .map(|_| [MoveList::new(), MoveList::new()])
                 .collect(),
+            accumulators: AccumulatorStack::new(),
         }
     }
 }
@@ -347,12 +349,6 @@ struct Worker<'a> {
     last_iteration_pv: Vec<Move>,
     pv: Box<[[Move; MAX_PLY + 2]]>,
     pv_len: Box<[usize]>,
-    accumulators: Box<[Accumulator]>,
-    /// Whether each ply's accumulator is current; if not, `updates` holds how it
-    /// follows from the previous ply's.
-    computed: Box<[bool]>,
-    updates: Box<[Update]>,
-    refresh_cache: RefreshCache,
     tablebases: Option<Arc<Tablebases>>,
 }
 
@@ -768,6 +764,7 @@ impl Memory {
         Self {
             histories: Histories::empty(),
             lists: Box::default(),
+            accumulators: AccumulatorStack::empty(),
         }
     }
 }
@@ -783,8 +780,8 @@ impl<'a> Worker<'a> {
         threads: usize,
     ) -> Self {
         let started = limits.started.unwrap_or_else(Instant::now);
-        let mut accumulators = vec![Accumulator::default(); MAX_PLY + 2].into_boxed_slice();
-        accumulators[0] = network().fresh(&position);
+        let mut memory = tt.take_memory();
+        memory.accumulators.reset(&position);
         let reductions = (0..MAX_MOVES)
             .map(|index| {
                 if index == 0 {
@@ -820,7 +817,7 @@ impl<'a> Worker<'a> {
             nodes: 0,
             tbhits: 0,
             sel_depth: 0,
-            memory: tt.take_memory(),
+            memory,
             stack: vec![Frame::default(); MAX_PLY + FRAME_OFFSET + 4].into_boxed_slice(),
             reductions,
             root_moves,
@@ -834,10 +831,6 @@ impl<'a> Worker<'a> {
             last_iteration_pv: Vec::new(),
             pv: vec![[Move::NULL; MAX_PLY + 2]; MAX_PLY + 2].into_boxed_slice(),
             pv_len: vec![0; MAX_PLY + 2].into_boxed_slice(),
-            accumulators,
-            computed: vec![true; MAX_PLY + 2].into_boxed_slice(),
-            updates: (0..MAX_PLY + 2).map(|_| Update::none()).collect(),
-            refresh_cache: RefreshCache::new(),
             tablebases: limits.tablebases.clone(),
         }
     }
@@ -945,8 +938,8 @@ impl<'a> Worker<'a> {
         }
     }
 
-    /// Makes `mv` from `ply`, deriving the next ply's accumulator lazily, and records it in
-    /// the ply's frame for the histories of the replies.
+    /// Makes `mv` from `ply`, recording what it changes for the accumulators, and records
+    /// it in the ply's frame for the histories of the replies.
     fn do_move(&mut self, mv: Move, ply: usize) {
         let in_check = self.at(ply, 0).in_check;
         let capture = is_capture_stage(mv);
@@ -960,23 +953,14 @@ impl<'a> Worker<'a> {
         if self.nodes & 1023 == 0 {
             self.shared.nodes.fetch_add(1024, Ordering::Relaxed);
         }
-        let delta = inphzugzwang_nnue::delta(&self.position, mv);
-        self.position.make(mv);
+        let dirty = self.memory.accumulators.push();
+        self.position.make_recorded(mv, dirty);
         self.tt.prefetch(table_key(&self.position));
-        if network().prepare(&delta, &self.position, &mut self.updates[ply + 1]) {
-            self.computed[ply + 1] = false;
-        } else {
-            self.ensure_accumulator(ply);
-            let (parents, children) = self.accumulators.split_at_mut(ply + 1);
-            network().apply(
-                &parents[ply],
-                &mut children[0],
-                &delta,
-                &self.position,
-                &mut self.refresh_cache,
-            );
-            self.computed[ply + 1] = true;
-        }
+    }
+
+    fn undo_move(&mut self) {
+        self.position.unmake();
+        self.memory.accumulators.pop();
     }
 
     fn do_null_move(&mut self, ply: usize) {
@@ -986,30 +970,15 @@ impl<'a> Worker<'a> {
         frame.continuation = SENTINEL;
         frame.correction_row = NO_PIECE_SQUARE;
         self.position.make_null();
-        self.updates[ply + 1].clear();
-        self.computed[ply + 1] = false;
-    }
-
-    /// Brings the accumulator of `ply` up to date from the nearest current one before it.
-    fn ensure_accumulator(&mut self, ply: usize) {
-        let mut start = ply;
-        while !self.computed[start] {
-            start -= 1;
-        }
-        for next in start + 1..=ply {
-            let (parents, children) = self.accumulators.split_at_mut(next);
-            network().apply_update(&parents[next - 1], &mut children[0], &self.updates[next]);
-            self.computed[next] = true;
-        }
     }
 
     /// Stockfish 19's evaluation for the side to move, with its optimism.
-    fn evaluate(&mut self, ply: usize) -> i32 {
-        self.ensure_accumulator(ply);
+    fn evaluate(&mut self) -> i32 {
         let position = &self.position;
         let optimism = self.optimism[position.side_to_move().index()];
-        network()
-            .evaluate(&self.accumulators[ply], position)
+        self.memory
+            .accumulators
+            .evaluate(position)
             .evaluation_with_optimism(position, optimism)
     }
 
@@ -1487,7 +1456,7 @@ impl<'a> Worker<'a> {
         if !ROOT {
             if self.stopped() || self.position.is_draw(ply) || ply >= MAX_PLY {
                 return if ply >= MAX_PLY && !in_check {
-                    self.evaluate(ply)
+                    self.evaluate()
                 } else {
                     self.value_draw()
                 };
@@ -1545,7 +1514,7 @@ impl<'a> Worker<'a> {
             unadjusted = if is_valid(record.eval) {
                 record.eval
             } else {
-                self.evaluate(ply)
+                self.evaluate()
             };
             eval = corrected(unadjusted, correction);
             self.at_mut(ply, 0).static_eval = eval;
@@ -1553,7 +1522,7 @@ impl<'a> Worker<'a> {
                 eval = tt_value;
             }
         } else {
-            unadjusted = self.evaluate(ply);
+            unadjusted = self.evaluate();
             eval = corrected(unadjusted, correction);
             self.at_mut(ply, 0).static_eval = eval;
             self.tt.store(
@@ -1765,7 +1734,7 @@ impl<'a> Worker<'a> {
                             !cut_node,
                         );
                     }
-                    self.position.unmake();
+                    self.undo_move();
                     if self.stopped() {
                         return 0;
                     }
@@ -2034,7 +2003,7 @@ impl<'a> Worker<'a> {
                 }
                 value = -self.search::<true, false>(new_depth, -beta, -alpha, ply + 1, false);
             }
-            self.position.unmake();
+            self.undo_move();
             if self.stopped() {
                 return 0;
             }
@@ -2245,7 +2214,7 @@ impl<'a> Worker<'a> {
         }
         if self.position.is_draw(ply) || ply >= MAX_PLY {
             return if ply >= MAX_PLY && !in_check {
-                self.evaluate(ply)
+                self.evaluate()
             } else {
                 0
             };
@@ -2280,7 +2249,7 @@ impl<'a> Worker<'a> {
             let correction = self.correction_value(ply);
             unadjusted = match hit {
                 Some(record) if is_valid(record.eval) => record.eval,
-                _ => self.evaluate(ply),
+                _ => self.evaluate(),
             };
             let static_eval = corrected(unadjusted, correction);
             self.at_mut(ply, 0).static_eval = static_eval;
@@ -2363,7 +2332,7 @@ impl<'a> Worker<'a> {
             }
             self.do_move(mv, ply);
             let value = -self.quiescence::<PV>(-beta, -alpha, ply + 1);
-            self.position.unmake();
+            self.undo_move();
             if value > best {
                 best = value;
                 if value > alpha {

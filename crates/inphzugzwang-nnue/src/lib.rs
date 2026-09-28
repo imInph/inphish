@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use inphzugzwang_core::{
     between, bishop_attacks, king_attacks, knight_attacks, pawn_attacks, rook_attacks, Bitboard,
-    Color, Move, MoveFlag, Piece, PieceType, Position, Square,
+    Color, Dirty, Piece, PieceType, Position, Square, THREAT_ADDED,
 };
 
 /// Width of one perspective's accumulator.
@@ -33,9 +33,15 @@ const WEIGHT_SCALE_BITS: u32 = 6;
 const OUTPUT_SCALE: i32 = 16;
 /// Upper bound of simultaneously active threat or pawn-pair features, as in Stockfish.
 const MAX_EXTRA: usize = 256;
-/// Capacity for the threats or pawn pairs around the squares one move changes; a move
-/// touching more refreshes the accumulator instead.
-const TOUCHING: usize = 48;
+/// Capacity for the threat and pawn-pair features one move changes for a perspective;
+/// a move changing more refreshes the accumulator instead.
+const CHANGES: usize = 160;
+/// Capacity for the threats or pawn pairs around the squares one move changes, in the
+/// tests that compare positions before and after.
+#[cfg(test)]
+const TOUCHING: usize = 128;
+/// Accumulators the stack holds, above the most plies a search reaches.
+const STACK_DEPTH: usize = 256;
 const PIECE_KINDS: [PieceType; 6] = [
     PieceType::Pawn,
     PieceType::Knight,
@@ -148,7 +154,9 @@ impl<const N: usize> List<N> {
         Self {
             len: 0,
             overflowed: false,
-            items: [const { MaybeUninit::uninit() }; N],
+            // SAFETY: an array of `MaybeUninit` needs no initialisation; built as one
+            // uninitialised array it costs nothing, where repeated elements are zeroed.
+            items: unsafe { MaybeUninit::<[MaybeUninit<u32>; N]>::uninit().assume_init() },
         }
     }
 
@@ -170,130 +178,6 @@ impl<const N: usize> List<N> {
         // SAFETY: the first `len` items were written by `push`.
         unsafe { std::slice::from_raw_parts(self.items.as_ptr().cast(), self.len) }
     }
-
-    fn sorted(mut self) -> Self {
-        // SAFETY: as in `as_slice`.
-        unsafe { std::slice::from_raw_parts_mut(self.items.as_mut_ptr().cast::<u32>(), self.len) }
-            .sort_unstable();
-        self
-    }
-}
-
-/// Features a move removes and adds, read from the position before the move. A king
-/// move changes every feature of its own perspective, which is then refreshed instead.
-/// Threats and pawn pairs are compared on the squares the move changes: those the move
-/// empties or fills, and so every threat from, onto or through them.
-pub struct Delta {
-    removed: [(Piece, Square); 2],
-    removed_len: usize,
-    added: [(Piece, Square); 2],
-    added_len: usize,
-    king_moved: Option<Color>,
-    changed: Bitboard,
-    threats: List<TOUCHING>,
-    pairs: List<TOUCHING>,
-}
-
-impl Delta {
-    fn remove(&mut self, piece: Piece, square: Square) {
-        self.removed[self.removed_len] = (piece, square);
-        self.removed_len += 1;
-        self.changed = self.changed | square.bit();
-    }
-
-    fn add(&mut self, piece: Piece, square: Square) {
-        self.added[self.added_len] = (piece, square);
-        self.added_len += 1;
-        self.changed = self.changed | square.bit();
-    }
-}
-
-/// Feature changes of one move for both perspectives, prepared by `Network::prepare`.
-#[derive(Clone)]
-pub struct Update {
-    gone: [[u32; 2]; 2],
-    gone_len: usize,
-    new: [[u32; 2]; 2],
-    new_len: usize,
-    extra_gone: [List<{ 2 * TOUCHING }>; 2],
-    extra_new: [List<{ 2 * TOUCHING }>; 2],
-}
-
-impl Update {
-    /// Makes this an update that changes nothing, as for a null move.
-    pub fn clear(&mut self) {
-        self.gone_len = 0;
-        self.new_len = 0;
-        for list in self.extra_gone.iter_mut().chain(&mut self.extra_new) {
-            list.clear();
-        }
-    }
-
-    /// An update that changes nothing.
-    pub fn none() -> Self {
-        Self {
-            gone: [[0; 2]; 2],
-            gone_len: 0,
-            new: [[0; 2]; 2],
-            new_len: 0,
-            extra_gone: [List::new(), List::new()],
-            extra_new: [List::new(), List::new()],
-        }
-    }
-}
-
-pub fn delta(position: &Position, mv: Move) -> Delta {
-    let side = position.side_to_move();
-    let piece = position
-        .piece_at(mv.from())
-        .expect("legal move has a mover");
-    let placeholder = (piece, mv.from());
-    let mut delta = Delta {
-        removed: [placeholder; 2],
-        removed_len: 0,
-        added: [placeholder; 2],
-        added_len: 0,
-        king_moved: (piece.kind == PieceType::King).then_some(side),
-        changed: Bitboard::EMPTY,
-        threats: List::new(),
-        pairs: List::new(),
-    };
-    if mv.is_castle() {
-        let kingside = mv.flag() == 2;
-        let rook = Piece {
-            color: side,
-            kind: PieceType::Rook,
-        };
-        delta.remove(piece, mv.from());
-        delta.remove(rook, mv.to());
-        delta.add(
-            piece,
-            Square::new(if kingside { 6 } else { 2 }, side.back_rank()),
-        );
-        delta.add(
-            rook,
-            Square::new(if kingside { 5 } else { 3 }, side.back_rank()),
-        );
-    } else {
-        delta.remove(piece, mv.from());
-        if mv.flag() == MoveFlag::EnPassant as u8 {
-            let victim = Piece {
-                color: side.other(),
-                kind: PieceType::Pawn,
-            };
-            delta.remove(victim, Square::new(mv.to().file(), mv.from().rank()));
-        } else if let Some(victim) = position.piece_at(mv.to()) {
-            delta.remove(victim, mv.to());
-        }
-        let placed = Piece {
-            color: side,
-            kind: mv.promotion().unwrap_or(piece.kind),
-        };
-        delta.add(placed, mv.to());
-    }
-    delta.threats = touching_threats(position, delta.changed);
-    delta.pairs = touching_pairs(position, delta.changed);
-    delta
 }
 
 /// Stockfish's piece numbering: 1 to 6 for White's pawn to king, 9 to 14 for Black's.
@@ -529,6 +413,7 @@ fn all_threats(position: &Position) -> List<MAX_EXTRA> {
     list
 }
 
+#[cfg(test)]
 /// Active threats from, onto or through the `changed` squares, sorted since attackers
 /// and their targets are visited in square order. A threat whose
 /// squares and the squares between them are all unchanged is the same before and after a
@@ -588,21 +473,29 @@ fn all_pairs(position: &Position) -> List<MAX_EXTRA> {
     list
 }
 
-/// Pawn pairs with a pawn on a `changed` square, sorted.
-fn touching_pairs(position: &Position, changed: Bitboard) -> List<TOUCHING> {
-    let pawns = position.pieces(Color::White, PieceType::Pawn)
-        | position.pieces(Color::Black, PieceType::Pawn);
-    let mut list = List::new();
-    for a in pawns & changed {
-        for b in pair_band(a) & pawns {
+/// Passes on the pawn pairs among `pawns`, each colour's pawns, with a pawn on a
+/// `changed` square, encoded as `encode_pair` does.
+fn changed_pairs(pawns: [Bitboard; 2], changed: Bitboard, mut out: impl FnMut(u32)) {
+    let all = pawns[0] | pawns[1];
+    let colour = |square: Square| u32::from(pawns[1].contains(square));
+    for a in all & changed {
+        for b in pair_band(a) & all {
             if !changed.contains(b) || a.index() < b.index() {
-                list.push(encode_pair(position, a, b));
+                let (low, high) = if a.index() < b.index() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                out(((low.index() as u32) << 16)
+                    | ((high.index() as u32) << 8)
+                    | (colour(low) << 1)
+                    | colour(high));
             }
         }
     }
-    list.sorted()
 }
 
+#[cfg(test)]
 /// Items of sorted `before` missing from sorted `after`, and the reverse.
 fn difference(before: &[u32], after: &[u32]) -> (List<TOUCHING>, List<TOUCHING>) {
     let (mut gone, mut new) = (List::new(), List::new());
@@ -660,6 +553,269 @@ impl RefreshCache {
 }
 
 impl Default for RefreshCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One move's feature changes for one perspective, whose king stands on the same
+/// square before and after the move.
+struct Changes {
+    removed: [u32; 2],
+    removed_len: usize,
+    added: [u32; 2],
+    added_len: usize,
+    extra_gone: List<CHANGES>,
+    extra_new: List<CHANGES>,
+}
+
+impl Changes {
+    fn new() -> Self {
+        Self {
+            removed: [0; 2],
+            removed_len: 0,
+            added: [0; 2],
+            added_len: 0,
+            extra_gone: List::new(),
+            extra_new: List::new(),
+        }
+    }
+
+    /// Becomes the changes `dirty` records, with the piece-square features when `psq` is
+    /// set. Refilling one value spares clearing new lists for every update.
+    fn fill(&mut self, dirty: &Dirty, perspective: Color, king: Square, psq: bool) {
+        let changes = self;
+        changes.removed_len = 0;
+        changes.added_len = 0;
+        changes.extra_gone.clear();
+        changes.extra_new.clear();
+        if psq {
+            for &(piece, square) in dirty.removed() {
+                changes.removed[changes.removed_len] =
+                    feature(perspective, king, piece, square) as u32;
+                changes.removed_len += 1;
+            }
+            for &(piece, square) in dirty.added() {
+                changes.added[changes.added_len] = feature(perspective, king, piece, square) as u32;
+                changes.added_len += 1;
+            }
+        }
+        let indexer = Indexer::new(perspective, king);
+        for &threat in dirty.threats() {
+            if let Some(feature) = indexer.threat(threat) {
+                if threat & THREAT_ADDED == 0 {
+                    changes.extra_gone.push(feature);
+                } else {
+                    changes.extra_new.push(feature);
+                }
+            }
+        }
+        let [before, after] = dirty.pawns();
+        let changed = (before[0] ^ after[0]) | (before[1] ^ after[1]);
+        if changed.0 != 0 {
+            changed_pairs(before, changed, |pair| {
+                changes.extra_gone.push(indexer.pair(pair))
+            });
+            changed_pairs(after, changed, |pair| {
+                changes.extra_new.push(indexer.pair(pair))
+            });
+        }
+    }
+
+    fn gone(&self) -> &[u32] {
+        &self.removed[..self.removed_len]
+    }
+
+    fn arrived(&self) -> &[u32] {
+        &self.added[..self.added_len]
+    }
+
+    fn overflowed(&self) -> bool {
+        self.extra_gone.overflowed || self.extra_new.overflowed
+    }
+}
+
+/// The accumulators of the positions from the search's root to the current one, as
+/// Stockfish 19's `AccumulatorStack` keeps them. Making a move only records what it
+/// changed; a perspective's accumulator is brought up to date when a position is
+/// evaluated, from the nearest one computed before it, or, past a move of its own king,
+/// by a refresh of the current position from which the earlier ones are then derived
+/// backwards. A null move leaves the stack alone, since the pieces stay where they are.
+pub struct AccumulatorStack {
+    entries: Box<[StackEntry]>,
+    size: usize,
+    cache: RefreshCache,
+    changes: Changes,
+}
+
+struct StackEntry {
+    accumulator: Accumulator,
+    computed: [bool; 2],
+    /// The move leading to this position.
+    dirty: Dirty,
+}
+
+impl AccumulatorStack {
+    pub fn new() -> Self {
+        Self {
+            entries: (0..STACK_DEPTH)
+                .map(|_| StackEntry {
+                    accumulator: Accumulator::default(),
+                    computed: [false; 2],
+                    dirty: Dirty::new(),
+                })
+                .collect(),
+            size: 0,
+            cache: RefreshCache::new(),
+            changes: Changes::new(),
+        }
+    }
+
+    /// A stack of no size, standing in for one handed back.
+    pub fn empty() -> Self {
+        Self {
+            entries: Box::default(),
+            size: 0,
+            cache: RefreshCache {
+                entries: Box::default(),
+            },
+            changes: Changes::new(),
+        }
+    }
+
+    /// Starts over from `position`.
+    pub fn reset(&mut self, position: &Position) {
+        let root = &mut self.entries[0];
+        for perspective in [Color::White, Color::Black] {
+            let side = perspective.index();
+            network().refresh_cached(
+                position,
+                perspective,
+                &mut root.accumulator.values[side],
+                &mut root.accumulator.psqt[side],
+                &mut self.cache,
+            );
+        }
+        root.computed = [true; 2];
+        self.size = 1;
+    }
+
+    /// Adds the position after a move, whose changes the caller records in the result.
+    pub fn push(&mut self) -> &mut Dirty {
+        assert!(
+            self.size < self.entries.len(),
+            "accumulator stack exhausted"
+        );
+        let entry = &mut self.entries[self.size];
+        entry.computed = [false; 2];
+        self.size += 1;
+        &mut entry.dirty
+    }
+
+    pub fn pop(&mut self) {
+        debug_assert!(self.size > 1);
+        self.size -= 1;
+    }
+
+    /// The current position's accumulator, brought up to date.
+    pub fn current(&mut self, position: &Position) -> &Accumulator {
+        self.update(position, Color::White);
+        self.update(position, Color::Black);
+        &self.entries[self.size - 1].accumulator
+    }
+
+    pub fn evaluate(&mut self, position: &Position) -> Output {
+        let accumulator = self.current(position);
+        network().evaluate(accumulator, position)
+    }
+
+    fn update(&mut self, position: &Position, perspective: Color) {
+        let side = perspective.index();
+        let top = self.size - 1;
+        if self.entries[top].computed[side] {
+            return;
+        }
+        let refreshes = |dirty: &Dirty| {
+            dirty.overflowed()
+                || dirty
+                    .king()
+                    .is_some_and(|(color, _, _)| color == perspective)
+        };
+        let mut last = top;
+        while !self.entries[last].computed[side] && !refreshes(&self.entries[last].dirty) {
+            last -= 1;
+        }
+        let network = network();
+        let king = position.king(perspective);
+        if self.entries[last].computed[side] {
+            for next in last + 1..=top {
+                self.step(network, next - 1, next, perspective, king);
+            }
+            return;
+        }
+        let (earlier, later) = self.entries.split_at_mut(top);
+        let (parent, entry) = (&earlier[top - 1], &mut later[0]);
+        let values = &mut entry.accumulator.values[side];
+        let psqt = &mut entry.accumulator.psqt[side];
+        let hybrid = last == top
+            && parent.computed[side]
+            && network.king_hybrid(
+                (
+                    &parent.accumulator.values[side],
+                    &parent.accumulator.psqt[side],
+                ),
+                values,
+                psqt,
+                &entry.dirty,
+                position,
+                perspective,
+                &mut self.cache,
+                &mut self.changes,
+            );
+        if !hybrid {
+            network.refresh_cached(position, perspective, values, psqt, &mut self.cache);
+        }
+        entry.computed[side] = true;
+        for next in (last..top).rev() {
+            self.step(network, next + 1, next, perspective, king);
+        }
+    }
+
+    /// Derives entry `to` from the adjacent entry `from` for one perspective.
+    fn step(
+        &mut self,
+        network: &Network,
+        from: usize,
+        to: usize,
+        perspective: Color,
+        king: Square,
+    ) {
+        let side = perspective.index();
+        let forward = to > from;
+        let (parent, child) = if forward {
+            let (earlier, later) = self.entries.split_at_mut(to);
+            (&earlier[from], &mut later[0])
+        } else {
+            let (earlier, later) = self.entries.split_at_mut(from);
+            (&later[0], &mut earlier[to])
+        };
+        let record = if forward { &child.dirty } else { &parent.dirty };
+        self.changes.fill(record, perspective, king, true);
+        network.apply_changes(
+            (
+                &parent.accumulator.values[side],
+                &parent.accumulator.psqt[side],
+            ),
+            &mut child.accumulator.values[side],
+            &mut child.accumulator.psqt[side],
+            &self.changes,
+            forward,
+        );
+        child.computed[side] = true;
+    }
+}
+
+impl Default for AccumulatorStack {
     fn default() -> Self {
         Self::new()
     }
@@ -917,24 +1073,23 @@ impl Network {
     #[allow(clippy::too_many_arguments)]
     fn king_hybrid(
         &self,
-        parent: &Accumulator,
+        parent: (&[i16; HALF], &[i32; BUCKETS]),
         values: &mut [i16; HALF],
         psqt: &mut [i32; BUCKETS],
-        delta: &Delta,
+        dirty: &Dirty,
         after: &Position,
         perspective: Color,
-        [threats_gone, pairs_gone, threats_new, pairs_new]: [&[u32]; 4],
         cache: &mut RefreshCache,
+        changes: &mut Changes,
     ) -> bool {
         let side = perspective.index();
         let new_king = after.king(perspective);
-        let Some(&(_, old_king)) = delta.removed[..delta.removed_len]
-            .iter()
-            .find(|(piece, _)| piece.kind == PieceType::King && piece.color == perspective)
+        let Some((_, old_king, _)) = dirty.king().filter(|&(color, _, _)| color == perspective)
         else {
             return false;
         };
-        if delta.added_len != 1
+        if dirty.is_castle()
+            || dirty.overflowed()
             || (old_king.file() < 4) != (new_king.file() < 4)
             || after.occupied().count() < 15
         {
@@ -947,10 +1102,7 @@ impl Network {
                 previous[color.index()][index] = after.pieces(color, kind);
             }
         }
-        for &(piece, square) in delta.added[..delta.added_len]
-            .iter()
-            .chain(&delta.removed[..delta.removed_len])
-        {
+        for &(piece, square) in dirty.added().iter().chain(dirty.removed()) {
             let board = &mut previous[piece.color.index()][piece.kind.index()];
             *board = *board ^ square.bit();
         }
@@ -995,12 +1147,12 @@ impl Network {
         }
         let mut base = [0_i16; HALF];
         for (index, slot) in base.iter_mut().enumerate() {
-            *slot = parent.values[side][index]
+            *slot = parent.0[index]
                 .wrapping_add(new_values[index])
                 .wrapping_sub(old_entry.values[index]);
         }
         for bucket in 0..BUCKETS {
-            psqt[bucket] = parent.psqt[side][bucket] + new_psqt[bucket] - old_entry.psqt[bucket];
+            psqt[bucket] = parent.1[bucket] + new_psqt[bucket] - old_entry.psqt[bucket];
         }
         for (rows, sign) in [(&old_removed, 1), (&old_added, -1)] {
             for &feature in rows.as_slice() {
@@ -1009,12 +1161,12 @@ impl Network {
                 }
             }
         }
-        let indexer = Indexer::new(perspective, new_king);
-        let mut extra_gone = List::<{ 2 * TOUCHING }>::new();
-        let mut extra_new = List::<{ 2 * TOUCHING }>::new();
-        indexer.features(threats_gone, pairs_gone, &mut extra_gone);
-        indexer.features(threats_new, pairs_new, &mut extra_new);
-        for (rows, sign) in [(&extra_gone, -1), (&extra_new, 1)] {
+        changes.fill(dirty, perspective, new_king, false);
+        if changes.overflowed() {
+            return false;
+        }
+        let (extra_gone, extra_new) = (&changes.extra_gone, &changes.extra_new);
+        for (rows, sign) in [(extra_gone, -1), (extra_new, 1)] {
             for &feature in rows.as_slice() {
                 let weights = self.extra_psqt_row(feature as usize);
                 for (value, &weight) in psqt.iter_mut().zip(weights) {
@@ -1034,171 +1186,40 @@ impl Network {
         true
     }
 
-    /// Derives the accumulator after a move from the one before it; `after` is the
-    /// position once the move is made.
-    pub fn apply(
+    /// One perspective's accumulator from another's by the feature changes between
+    /// them: forward, the changes of the move leading to it, or backward, undoing them.
+    fn apply_changes(
         &self,
-        parent: &Accumulator,
-        child: &mut Accumulator,
-        delta: &Delta,
-        after: &Position,
-        cache: &mut RefreshCache,
+        parent: (&[i16; HALF], &[i32; BUCKETS]),
+        values: &mut [i16; HALF],
+        psqt: &mut [i32; BUCKETS],
+        changes: &Changes,
+        forward: bool,
     ) {
-        let threats = touching_threats(after, delta.changed);
-        let pairs = touching_pairs(after, delta.changed);
-        let overflowed = delta.threats.overflowed
-            || delta.pairs.overflowed
-            || threats.overflowed
-            || pairs.overflowed;
-        let (threats_gone, threats_new) = difference(delta.threats.as_slice(), threats.as_slice());
-        let (pairs_gone, pairs_new) = difference(delta.pairs.as_slice(), pairs.as_slice());
-        for perspective in [Color::White, Color::Black] {
-            let side = perspective.index();
-            let (values, psqt) = (&mut child.values[side], &mut child.psqt[side]);
-            if overflowed {
-                self.refresh_cached(after, perspective, values, psqt, cache);
-                continue;
-            }
-            let king = after.king(perspective);
-            if delta.king_moved == Some(perspective) {
-                let extras = [
-                    threats_gone.as_slice(),
-                    pairs_gone.as_slice(),
-                    threats_new.as_slice(),
-                    pairs_new.as_slice(),
-                ];
-                if !self.king_hybrid(
-                    parent,
-                    values,
-                    psqt,
-                    delta,
-                    after,
-                    perspective,
-                    extras,
-                    cache,
-                ) {
-                    self.refresh_cached(after, perspective, values, psqt, cache);
-                }
-                continue;
-            }
-            let index = |&(piece, square): &(Piece, Square)| {
-                feature(perspective, king, piece, square) as u32
-            };
-            let gone = [index(&delta.removed[0]), index(&delta.removed[1])];
-            let new = [index(&delta.added[0]), index(&delta.added[1])];
-            let gone = &gone[..delta.removed_len];
-            let new = &new[..delta.added_len];
-            let indexer = Indexer::new(perspective, king);
-            let mut extra_gone = List::<{ 2 * TOUCHING }>::new();
-            let mut extra_new = List::<{ 2 * TOUCHING }>::new();
-            indexer.features(
-                threats_gone.as_slice(),
-                pairs_gone.as_slice(),
-                &mut extra_gone,
-            );
-            indexer.features(threats_new.as_slice(), pairs_new.as_slice(), &mut extra_new);
-            *psqt = parent.psqt[side];
-            for (rows, sign) in [(gone, -1), (new, 1)] {
-                for &feature in rows {
-                    for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
-                        *value += sign * weight;
-                    }
+        let (gone, new) = (changes.gone(), changes.arrived());
+        let (extra_gone, extra_new) = (changes.extra_gone.as_slice(), changes.extra_new.as_slice());
+        let (gone, new, extra_gone, extra_new) = if forward {
+            (gone, new, extra_gone, extra_new)
+        } else {
+            (new, gone, extra_new, extra_gone)
+        };
+        *psqt = *parent.1;
+        for (rows, sign) in [(gone, -1), (new, 1)] {
+            for &feature in rows {
+                for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
+                    *value += sign * weight;
                 }
             }
-            for (rows, sign) in [(&extra_gone, -1), (&extra_new, 1)] {
-                for &feature in rows.as_slice() {
-                    let weights = self.extra_psqt_row(feature as usize);
-                    for (value, &weight) in psqt.iter_mut().zip(weights) {
-                        *value += sign * weight;
-                    }
+        }
+        for (rows, sign) in [(extra_gone, -1), (extra_new, 1)] {
+            for &feature in rows {
+                let weights = self.extra_psqt_row(feature as usize);
+                for (value, &weight) in psqt.iter_mut().zip(weights) {
+                    *value += sign * weight;
                 }
             }
-            update_values(
-                values,
-                &parent.values[side],
-                self,
-                gone,
-                new,
-                extra_gone.as_slice(),
-                extra_new.as_slice(),
-            );
         }
-    }
-
-    /// The feature changes of the move `delta` describes, for both perspectives, so that
-    /// the accumulator can be updated later and only if an evaluation needs it. Returns
-    /// false, leaving `update` unspecified, when the move needs a refresh instead: a king move, or more changed
-    /// threats than an incremental update holds.
-    pub fn prepare(&self, delta: &Delta, after: &Position, update: &mut Update) -> bool {
-        if delta.king_moved.is_some() || delta.threats.overflowed || delta.pairs.overflowed {
-            return false;
-        }
-        let threats = touching_threats(after, delta.changed);
-        let pairs = touching_pairs(after, delta.changed);
-        if threats.overflowed || pairs.overflowed {
-            return false;
-        }
-        let (threats_gone, threats_new) = difference(delta.threats.as_slice(), threats.as_slice());
-        let (pairs_gone, pairs_new) = difference(delta.pairs.as_slice(), pairs.as_slice());
-        update.clear();
-        update.gone_len = delta.removed_len;
-        update.new_len = delta.added_len;
-        for perspective in [Color::White, Color::Black] {
-            let side = perspective.index();
-            let king = after.king(perspective);
-            for (slot, &(piece, square)) in delta.removed[..delta.removed_len].iter().enumerate() {
-                update.gone[side][slot] = feature(perspective, king, piece, square) as u32;
-            }
-            for (slot, &(piece, square)) in delta.added[..delta.added_len].iter().enumerate() {
-                update.new[side][slot] = feature(perspective, king, piece, square) as u32;
-            }
-            let indexer = Indexer::new(perspective, king);
-            indexer.features(
-                threats_gone.as_slice(),
-                pairs_gone.as_slice(),
-                &mut update.extra_gone[side],
-            );
-            indexer.features(
-                threats_new.as_slice(),
-                pairs_new.as_slice(),
-                &mut update.extra_new[side],
-            );
-        }
-        true
-    }
-
-    /// Derives a child's accumulator from its parent's by a prepared update.
-    pub fn apply_update(&self, parent: &Accumulator, child: &mut Accumulator, update: &Update) {
-        for side in 0..2 {
-            let gone = &update.gone[side][..update.gone_len];
-            let new = &update.new[side][..update.new_len];
-            let psqt = &mut child.psqt[side];
-            *psqt = parent.psqt[side];
-            for (rows, sign) in [(gone, -1), (new, 1)] {
-                for &feature in rows {
-                    for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
-                        *value += sign * weight;
-                    }
-                }
-            }
-            for (rows, sign) in [(&update.extra_gone[side], -1), (&update.extra_new[side], 1)] {
-                for &feature in rows.as_slice() {
-                    let weights = self.extra_psqt_row(feature as usize);
-                    for (value, &weight) in psqt.iter_mut().zip(weights) {
-                        *value += sign * weight;
-                    }
-                }
-            }
-            update_values(
-                &mut child.values[side],
-                &parent.values[side],
-                self,
-                gone,
-                new,
-                update.extra_gone[side].as_slice(),
-                update.extra_new[side].as_slice(),
-            );
-        }
+        update_values(values, parent.0, self, gone, new, extra_gone, extra_new);
     }
 
     pub fn fresh(&self, position: &Position) -> Accumulator {
@@ -1743,6 +1764,88 @@ pub fn feature(perspective: Color, king: Square, piece: Piece, square: Square) -
 
 #[cfg(test)]
 mod tests {
+
+    use inphzugzwang_core::{Dirty, THREAT_ADDED};
+
+    /// The threats a move changes, from comparing the positions around the squares it
+    /// empties or fills, as (gone, new).
+    fn compared(before: &Position, after: &Position, dirty: &Dirty) -> (Vec<u32>, Vec<u32>) {
+        let mut changed = Bitboard::EMPTY;
+        for &(_, square) in dirty.removed().iter().chain(dirty.added()) {
+            changed = changed | square.bit();
+        }
+        let (gone, new) = difference(
+            touching_threats(before, changed).as_slice(),
+            touching_threats(after, changed).as_slice(),
+        );
+        (gone.as_slice().to_vec(), new.as_slice().to_vec())
+    }
+
+    /// The net threat changes a record lists: each threat's appearances less its
+    /// disappearances, as (gone, new).
+    fn recorded(dirty: &Dirty) -> (Vec<u32>, Vec<u32>) {
+        let mut net = std::collections::BTreeMap::<u32, i32>::new();
+        for &threat in dirty.threats() {
+            *net.entry(threat & !THREAT_ADDED).or_default() +=
+                if threat & THREAT_ADDED == 0 { -1 } else { 1 };
+        }
+        let gone = net
+            .iter()
+            .filter(|&(_, &n)| n < 0)
+            .map(|(&t, _)| t)
+            .collect();
+        let new = net
+            .iter()
+            .filter(|&(_, &n)| n > 0)
+            .map(|(&t, _)| t)
+            .collect();
+        assert!(net.values().all(|n| n.abs() <= 1));
+        (gone, new)
+    }
+
+    #[test]
+    fn recorded_threats_match_the_positions() {
+        let suites = [
+            include_str!("../../../tests/perft/standard.txt"),
+            include_str!("../../../tests/perft/chess960.txt"),
+        ];
+        let mut dirty = Dirty::new();
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut checked = 0;
+        for fen in suites
+            .iter()
+            .flat_map(|suite| suite.lines())
+            .filter_map(|line| line.splitn(4, '|').nth(3))
+        {
+            let mut position = Position::from_fen(fen).unwrap();
+            for _ in 0..40 {
+                let moves = position.legal_moves();
+                if moves.is_empty() {
+                    break;
+                }
+                for mv in moves.iter() {
+                    let before = position.clone();
+                    position.make_recorded(mv, &mut dirty);
+                    if !dirty.overflowed() {
+                        assert_eq!(
+                            recorded(&dirty),
+                            compared(&before, &position, &dirty),
+                            "{} {}",
+                            before.fen(),
+                            before.format_move(mv, true)
+                        );
+                        checked += 1;
+                    }
+                    position.unmake();
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                position.make(moves.get(seed as usize % moves.len()));
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
+    }
     use super::*;
 
     #[test]

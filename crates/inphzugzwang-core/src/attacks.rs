@@ -216,6 +216,7 @@ struct AttackTables {
     pawns: [[u64; 64]; 2],
     between: [[u64; 64]; 64],
     line: [[u64; 64]; 64],
+    ray_pass: [[u64; 64]; 64],
 }
 
 static TABLES: OnceLock<AttackTables> = OnceLock::new();
@@ -230,6 +231,7 @@ fn tables() -> &'static AttackTables {
             pawns: [[0; 64]; 2],
             between: [[0; 64]; 64],
             line: [[0; 64]; 64],
+            ray_pass: [[0; 64]; 64],
         };
         for from in 0..64 {
             let square = Square(from as u8);
@@ -286,6 +288,13 @@ fn tables() -> &'static AttackTables {
                     }
                     while on_board(file, rank) {
                         tables.line[from][to] |= 1_u64 << (rank * 8 + file);
+                        file += step_f;
+                        rank += step_r;
+                    }
+                    let mut file = square.file() as i8 + step_f;
+                    let mut rank = square.rank() as i8 + step_r;
+                    while on_board(file, rank) {
+                        tables.ray_pass[from][to] |= 1_u64 << (rank * 8 + file);
                         file += step_f;
                         rank += step_r;
                     }
@@ -418,6 +427,12 @@ pub fn between(a: Square, b: Square) -> Bitboard {
 
 pub fn line(a: Square, b: Square) -> Bitboard {
     Bitboard(tables().line[a.0 as usize][b.0 as usize])
+}
+
+/// The ray from `a` through `b` to the edge of the board, without `a`; empty when the two
+/// are not on one line.
+pub(crate) fn ray_pass(a: Square, b: Square) -> Bitboard {
+    Bitboard(tables().ray_pass[a.0 as usize][b.0 as usize])
 }
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
 use std::fmt;
 use std::sync::OnceLock;
 
-use crate::attacks::{between, line};
+use crate::attacks::{between, line, ray_pass};
 use crate::{bishop_attacks, king_attacks, knight_attacks, pawn_attacks, rook_attacks};
-use crate::{Bitboard, CastlingRights, Color, Move, MoveFlag, MoveList, Piece, PieceType, Square};
+use crate::{
+    Bitboard, CastlingRights, Color, Dirty, Move, MoveFlag, MoveList, Piece, PieceType, Square,
+};
 
 /// Which legal moves a generation pass produces.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -11,6 +13,15 @@ enum Generate {
     All,
     Tactical,
     Quiet,
+}
+
+/// Which threats through a square `Position::record_threats` records: all, none, or
+/// those on rays not holding every square of the mask.
+#[derive(Clone, Copy)]
+enum Rays {
+    All,
+    Unless(u64),
+    None,
 }
 
 pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -874,6 +885,15 @@ impl Position {
     }
 
     pub fn make(&mut self, mv: Move) {
+        self.make_with(mv, None);
+    }
+
+    /// Makes `mv` and records in `dirty` what it changed, for the network's updates.
+    pub fn make_recorded(&mut self, mv: Move, dirty: &mut Dirty) {
+        self.make_with(mv, Some(dirty));
+    }
+
+    fn make_with(&mut self, mv: Move, mut dirty: Option<&mut Dirty>) {
         debug_assert!(self.is_legal(mv));
         assert!(
             self.history.len() < MAX_HISTORY,
@@ -893,41 +913,73 @@ impl Position {
         if piece.kind == PieceType::Pawn {
             self.state.halfmove = 0;
         }
+        if let Some(dirty) = dirty.as_deref_mut() {
+            dirty.begin(self.pawn_boards());
+        }
+        // The board changes in Stockfish's order, so that the threats recorded along the
+        // way add up to exactly the difference between the positions.
         if mv.is_castle() {
             let kingside = mv.flag() == 2;
             let king_to = Square::new(if kingside { 6 } else { 2 }, side.back_rank());
             let rook_to = Square::new(if kingside { 5 } else { 3 }, side.back_rank());
-            remove(&mut self.state, from);
-            remove(&mut self.state, to);
-            place(&mut self.state, king_to, piece);
-            place(
-                &mut self.state,
-                rook_to,
-                Piece {
-                    color: side,
-                    kind: PieceType::Rook,
-                },
-            );
-        } else {
-            remove(&mut self.state, from);
-            let captured = if mv.flag() == MoveFlag::EnPassant as u8 {
-                let captured_square = Square::new(to.file(), from.rank());
-                remove(&mut self.state, captured_square)
-            } else {
-                remove(&mut self.state, to)
+            let rook = Piece {
+                color: side,
+                kind: PieceType::Rook,
             };
-            if captured.is_some() {
-                self.state.halfmove = 0;
+            self.lift(from, Rays::All, &mut dirty);
+            self.lift(to, Rays::All, &mut dirty);
+            self.put(king_to, piece, Rays::All, &mut dirty);
+            self.put(rook_to, rook, Rays::All, &mut dirty);
+            if let Some(dirty) = dirty.as_deref_mut() {
+                dirty.remove(piece, from);
+                dirty.remove(rook, to);
+                dirty.add(piece, king_to);
+                dirty.add(rook, rook_to);
+                dirty.finish(Some((side, from, king_to)), true);
             }
-            self.state.captured = captured;
+        } else {
             let placed = Piece {
                 color: side,
                 kind: mv.promotion().unwrap_or(piece.kind),
             };
-            place(&mut self.state, to, placed);
+            let captured = if mv.flag() == MoveFlag::EnPassant as u8 {
+                let square = Square::new(to.file(), from.rank());
+                let victim = self.lift(square, Rays::All, &mut dirty);
+                self.shift(from, to, &mut dirty);
+                victim.map(|victim| (victim, square))
+            } else if let Some(victim) = self.piece_at(to) {
+                self.lift(from, Rays::All, &mut dirty);
+                // The destination stays occupied, so no ray through it changes.
+                self.lift(to, Rays::None, &mut dirty);
+                self.put(to, placed, Rays::None, &mut dirty);
+                Some((victim, to))
+            } else if placed == piece {
+                self.shift(from, to, &mut dirty);
+                None
+            } else {
+                self.lift(from, Rays::All, &mut dirty);
+                self.put(to, placed, Rays::All, &mut dirty);
+                None
+            };
+            if captured.is_some() {
+                self.state.halfmove = 0;
+            }
+            self.state.captured = captured.map(|(victim, _)| victim);
+            if let Some(dirty) = dirty.as_deref_mut() {
+                dirty.remove(piece, from);
+                if let Some((victim, square)) = captured {
+                    dirty.remove(victim, square);
+                }
+                dirty.add(placed, to);
+                let king = (piece.kind == PieceType::King).then_some((side, from, to));
+                dirty.finish(king, false);
+            }
             if mv.flag() == MoveFlag::DoublePush as u8 {
                 self.state.ep = Some(Square::new(from.file(), (from.rank() + to.rank()) / 2));
             }
+        }
+        if let Some(dirty) = dirty {
+            dirty.set_pawns_after(self.pawn_boards());
         }
         if piece.kind == PieceType::King {
             self.state.castling.set(side, true, None);
@@ -956,6 +1008,132 @@ impl Position {
         self.update_keys_from_move(mv, piece, old_rights, old_ep);
         self.state.repetition = self.find_repetition();
         debug_assert_eq!(self.keys_from_scratch(), self.current_keys());
+    }
+
+    fn pawn_boards(&self) -> [Bitboard; 2] {
+        let pawns = self.state.pieces[PieceType::Pawn.index()];
+        [pawns & self.state.colors[0], pawns & self.state.colors[1]]
+    }
+
+    /// Takes the piece off `square`, recording the threats that change.
+    fn lift(
+        &mut self,
+        square: Square,
+        rays: Rays,
+        dirty: &mut Option<&mut Dirty>,
+    ) -> Option<Piece> {
+        let piece = self.piece_at(square)?;
+        // Stockfish records a piece swapped on its square once it is gone, and any other
+        // before it goes; for a swap the two agree, since the square stays occupied.
+        if let Some(dirty) = dirty.as_deref_mut() {
+            self.record_threats(piece, false, square, rays, dirty);
+        }
+        remove(&mut self.state, square)
+    }
+
+    /// Puts `piece` on the empty `square`, recording the threats that change.
+    fn put(&mut self, square: Square, piece: Piece, rays: Rays, dirty: &mut Option<&mut Dirty>) {
+        place(&mut self.state, square, piece);
+        if let Some(dirty) = dirty.as_deref_mut() {
+            self.record_threats(piece, true, square, rays, dirty);
+        }
+    }
+
+    /// Moves the piece on `from` to the empty `to`: a threat along a ray through both
+    /// squares is the same before and after, so neither side of the move records it.
+    fn shift(&mut self, from: Square, to: Square, dirty: &mut Option<&mut Dirty>) {
+        let both = Rays::Unless((from.bit() | to.bit()).0);
+        let piece = self.lift(from, both, dirty).expect("a moved piece");
+        self.put(to, piece, both, dirty);
+    }
+
+    /// Stockfish 19's `update_piece_threats`: with `piece` on `square` on the board, the
+    /// threats it makes and receives, which appear when it is placed (`put`) and vanish
+    /// when it is lifted, and with `rays` the threats of sliders through `square` onto
+    /// the next piece, which do the opposite.
+    fn record_threats(
+        &self,
+        piece: Piece,
+        put: bool,
+        square: Square,
+        rays: Rays,
+        dirty: &mut Dirty,
+    ) {
+        let pieces = &self.state.pieces;
+        let occupied = self.occupied();
+        let diagonal = bishop_attacks(square, occupied);
+        let straight = rook_attacks(square, occupied);
+        let from_square = diagonal | straight;
+        let kings = pieces[PieceType::King.index()];
+        let targets_all = occupied & !kings;
+        let queens = pieces[PieceType::Queen.index()];
+        let sliders = ((pieces[PieceType::Bishop.index()] | queens) & diagonal)
+            | ((pieces[PieceType::Rook.index()] | queens) & straight);
+        // A bishop or rook never targets a queen.
+        let can_target = |target: Piece, slider: Piece| {
+            target.kind != PieceType::Queen || slider.kind == PieceType::Queen
+        };
+        let mask = match rays {
+            Rays::All => Some(!0),
+            Rays::Unless(mask) => Some(mask),
+            Rays::None => None,
+        };
+        let through_sliders = |add_direct: bool, dirty: &mut Dirty| {
+            let Some(mask) = mask else {
+                return;
+            };
+            for slider_square in sliders {
+                let slider = self.piece_at(slider_square).expect("a slider");
+                let ray = ray_pass(slider_square, square);
+                let next = ray & from_square & targets_all;
+                if next.0 != 0 && ray.0 & mask != mask {
+                    let target_square = next.into_iter().next().expect("one square");
+                    let target = self.piece_at(target_square).expect("a target");
+                    if can_target(target, slider) {
+                        dirty.threat(!put, slider, slider_square, target, target_square);
+                    }
+                }
+                if add_direct && can_target(piece, slider) {
+                    dirty.threat(put, slider, slider_square, piece, square);
+                }
+            }
+        };
+        if piece.kind == PieceType::King {
+            through_sliders(false, dirty);
+            return;
+        }
+        let pawns = pieces[PieceType::Pawn.index()];
+        let knights = pieces[PieceType::Knight.index()];
+        let rooks = pieces[PieceType::Rook.index()];
+        let minors_rooks = pawns | knights | pieces[PieceType::Bishop.index()] | rooks;
+        let (attacks, targets) = match piece.kind {
+            PieceType::Pawn => (pawn_attacks(piece.color, square), knights | rooks),
+            PieceType::Knight => (knight_attacks(square), targets_all),
+            PieceType::Bishop => (diagonal, minors_rooks),
+            PieceType::Rook => (straight, minors_rooks),
+            _ => (from_square, targets_all),
+        };
+        for target_square in attacks & targets {
+            let target = self.piece_at(target_square).expect("a target");
+            dirty.threat(put, piece, square, target, target_square);
+        }
+        let mut incoming = knight_attacks(square) & knights;
+        if matches!(piece.kind, PieceType::Knight | PieceType::Rook) {
+            incoming = incoming
+                | (pawn_attacks(Color::White, square) & pawns & self.state.colors[1])
+                | (pawn_attacks(Color::Black, square) & pawns & self.state.colors[0]);
+        }
+        if mask.is_some() {
+            through_sliders(true, dirty);
+        } else if piece.kind == PieceType::Queen {
+            incoming = incoming | (sliders & queens);
+        } else {
+            incoming = incoming | sliders;
+        }
+        for source in incoming {
+            let attacker = self.piece_at(source).expect("an attacker");
+            dirty.threat(put, attacker, source, piece, square);
+        }
     }
 
     fn current_keys(&self) -> (u64, u64, [u64; 2], u64) {

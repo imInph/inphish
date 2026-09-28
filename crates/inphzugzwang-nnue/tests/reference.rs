@@ -1,5 +1,5 @@
 use inphzugzwang_core::Position;
-use inphzugzwang_nnue::{delta, network, Accumulator, Network, RefreshCache, Update};
+use inphzugzwang_nnue::{network, AccumulatorStack, Network};
 
 const REFERENCE: &str = include_str!("../../../tests/nnue/reference.txt");
 
@@ -44,45 +44,37 @@ fn rejects_damaged_files() {
     assert!(Network::parse(&version).is_err());
 }
 
-/// Walks every line to a fixed depth, deriving each accumulator from its parent's, and
-/// checks it against one computed from scratch. King moves go through the refresh cache,
-/// which the walk shares across all positions as the search does.
+/// Walks every line to a fixed depth with the accumulator stack, as the search makes and
+/// takes back moves, and checks the accumulators against ones computed from scratch.
+/// Positions are checked at the leaves and at every third inner node, so that updates run
+/// over several moves at once, forwards and after king moves backwards.
 fn walk(
     position: &mut Position,
-    parent: &Accumulator,
+    stack: &mut AccumulatorStack,
     depth: u8,
-    cache: &mut RefreshCache,
+    counter: &mut usize,
     checked: &mut usize,
 ) {
     let network = network();
     for mv in position.legal_moves().iter() {
-        let delta = delta(position, mv);
-        position.make(mv);
-        let mut child = Accumulator::default();
-        network.apply(parent, &mut child, &delta, position, cache);
-        let fresh = network.fresh(position);
-        let mut update = Update::none();
-        if network.prepare(&delta, position, &mut update) {
-            let mut deferred = Accumulator::default();
-            network.apply_update(parent, &mut deferred, &update);
+        position.make_recorded(mv, stack.push());
+        *counter += 1;
+        if depth == 1 || (*counter).is_multiple_of(3) {
+            let fresh = network.fresh(position);
+            let current = stack.current(position);
             assert!(
-                deferred.values == fresh.values && deferred.psqt == fresh.psqt,
-                "deferred {} after {}",
+                current.values == fresh.values && current.psqt == fresh.psqt,
+                "{} after {}",
                 position.fen(),
                 position.format_move(mv, true)
             );
+            *checked += 1;
         }
-        assert!(
-            child.values == fresh.values && child.psqt == fresh.psqt,
-            "{} after {}",
-            position.fen(),
-            position.format_move(mv, true)
-        );
-        *checked += 1;
         if depth > 1 {
-            walk(position, &child, depth - 1, cache, checked);
+            walk(position, stack, depth - 1, counter, checked);
         }
         position.unmake();
+        stack.pop();
     }
 }
 
@@ -93,7 +85,8 @@ fn incremental_updates_match_fresh() {
         include_str!("../../../tests/perft/chess960.txt"),
     ];
     let mut checked = 0;
-    let mut cache = RefreshCache::new();
+    let mut counter = 0;
+    let mut stack = AccumulatorStack::new();
     for fen in suites
         .iter()
         .flat_map(|suite| suite.lines())
@@ -101,8 +94,8 @@ fn incremental_updates_match_fresh() {
         .filter_map(|line| line.splitn(4, '|').nth(3))
     {
         let mut position = Position::from_fen(fen).expect(fen);
-        let root = network().fresh(&position);
-        walk(&mut position, &root, 3, &mut cache, &mut checked);
+        stack.reset(&position);
+        walk(&mut position, &mut stack, 3, &mut counter, &mut checked);
     }
     assert!(checked > 100_000, "{checked}");
 }
