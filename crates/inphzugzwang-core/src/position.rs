@@ -42,7 +42,9 @@ struct State {
     non_pawn_keys: [u64; 2],
     minor_key: u64,
     checkers: Bitboard,
-    pinned: Bitboard,
+    /// Pieces of either colour standing alone between each king and an enemy slider
+    /// aimed at it: the side's own are pinned, the opponent's can give discovered check.
+    blockers: [Bitboard; 2],
     reversible_start: usize,
     plies_from_null: u16,
     /// Plies back to an earlier occurrence of this position within reach of the fifty-move
@@ -111,7 +113,7 @@ impl Position {
             non_pawn_keys: [0; 2],
             minor_key: 0,
             checkers: Bitboard::EMPTY,
-            pinned: Bitboard::EMPTY,
+            blockers: [Bitboard::EMPTY; 2],
             reversible_start: 0,
             plies_from_null: 0,
             repetition: 0,
@@ -350,7 +352,7 @@ impl Position {
     }
 
     pub fn pinned(&self) -> Bitboard {
-        self.state.pinned
+        self.state.blockers[self.state.side.index()] & self.state.colors[self.state.side.index()]
     }
 
     pub fn piece_at(&self, square: Square) -> Option<Piece> {
@@ -421,31 +423,32 @@ impl Position {
         let enemy = self.state.side.other();
         let occupancy = self.occupied();
         self.state.checkers = self.attackers(king, enemy, occupancy);
-        self.state.pinned = Bitboard::EMPTY;
-        let sliders = (self.state.pieces[PieceType::Bishop.index()]
-            | self.state.pieces[PieceType::Rook.index()]
-            | self.state.pieces[PieceType::Queen.index()])
-            & self.state.colors[enemy.index()];
-        for attacker in sliders {
-            let Some(piece) = self.piece_at(attacker) else {
-                continue;
-            };
-            let aligned = if piece.kind == PieceType::Bishop {
-                king.file().abs_diff(attacker.file()) == king.rank().abs_diff(attacker.rank())
-            } else if piece.kind == PieceType::Rook {
-                king.file() == attacker.file() || king.rank() == attacker.rank()
-            } else {
-                line(king, attacker).0 != 0
-            };
-            if aligned {
-                let between = between(king, attacker) & occupancy;
-                if between.count() == 1
-                    && (between & self.state.colors[self.state.side.index()]).0 != 0
-                {
-                    self.state.pinned = self.state.pinned | between;
-                }
+        for color in [Color::White, Color::Black] {
+            self.state.blockers[color.index()] = self.slider_blockers(color);
+        }
+    }
+
+    /// Pieces standing alone between `color`'s king and an enemy slider that would attack
+    /// it along that line, found from the sliders aimed at the king, as Stockfish's
+    /// `update_slider_blockers` does.
+    fn slider_blockers(&self, color: Color) -> Bitboard {
+        let king = self.king(color);
+        let pieces = &self.state.pieces;
+        let queens = pieces[PieceType::Queen.index()];
+        let snipers = ((rook_attacks(king, Bitboard::EMPTY)
+            & (pieces[PieceType::Rook.index()] | queens))
+            | (bishop_attacks(king, Bitboard::EMPTY)
+                & (pieces[PieceType::Bishop.index()] | queens)))
+            & self.state.colors[color.other().index()];
+        let occupancy = self.occupied();
+        let mut blockers = Bitboard::EMPTY;
+        for sniper in snipers {
+            let between = between(king, sniper) & occupancy;
+            if between.count() == 1 {
+                blockers = blockers | between;
             }
         }
+        blockers
     }
 
     pub fn legal_moves(&self) -> MoveList {
@@ -493,6 +496,7 @@ impl Position {
         let theirs = self.state.colors[enemy.index()];
         let occupancy = own | theirs;
         let king = self.king(side);
+        let pinned = self.state.blockers[side.index()] & own;
         for to in king_attacks(king) & !own {
             if (tactical_only && !theirs.contains(to)) || (quiet_only && theirs.contains(to)) {
                 continue;
@@ -525,7 +529,7 @@ impl Position {
         };
         let pawns = self.state.pieces[PieceType::Pawn.index()] & own;
         for from in pawns {
-            let pinned_line = if self.state.pinned.contains(from) {
+            let pinned_line = if pinned.contains(from) {
                 line(king, from)
             } else {
                 Bitboard(!0)
@@ -598,7 +602,7 @@ impl Position {
                     }
                     _ => unreachable!(),
                 };
-                let allowed = if self.state.pinned.contains(from) {
+                let allowed = if pinned.contains(from) {
                     line(king, from)
                 } else {
                     Bitboard(!0)
@@ -750,7 +754,7 @@ impl Position {
                 return false;
             }
         }
-        !self.state.pinned.contains(from) || line(king, from).contains(to)
+        !self.pinned().contains(from) || line(king, from).contains(to)
     }
 
     pub fn is_pseudo_legal(&self, mv: Move) -> bool {
@@ -846,7 +850,59 @@ impl Position {
         }
     }
 
+    /// Whether `mv` checks, as Stockfish's `gives_check` finds it: the moving piece
+    /// attacking the king from its destination, a piece leaving a line between the king
+    /// and a slider, or the particular cases of promotions and en passant. Castling, rare
+    /// and in Chess960 irregular, is played out on the board.
     pub fn gives_check(&self, mv: Move) -> bool {
+        if mv.is_castle() {
+            return self.gives_check_by_board(mv);
+        }
+        let side = self.state.side;
+        let them = side.other();
+        let king = self.king(them);
+        let (from, to) = (mv.from(), mv.to());
+        let occupancy = self.occupied();
+        let moved = self
+            .piece_at(from)
+            .expect("check query needs an origin piece");
+        let reaches = |kind: PieceType, square: Square, occupancy: Bitboard| match kind {
+            PieceType::Pawn => pawn_attacks(side, square),
+            PieceType::Knight => knight_attacks(square),
+            PieceType::Bishop => bishop_attacks(square, occupancy),
+            PieceType::Rook => rook_attacks(square, occupancy),
+            PieceType::Queen => bishop_attacks(square, occupancy) | rook_attacks(square, occupancy),
+            PieceType::King => Bitboard::EMPTY,
+        };
+        if reaches(moved.kind, to, occupancy).contains(king) {
+            return true;
+        }
+        if self.state.blockers[them.index()].contains(from) && !line(from, to).contains(king) {
+            return true;
+        }
+        if let Some(promotion) = mv.promotion() {
+            return reaches(promotion, to, Bitboard(occupancy.0 ^ from.bit().0)).contains(king);
+        }
+        if mv.flag() == MoveFlag::EnPassant as u8 {
+            let captured = Square::new(to.file(), from.rank());
+            let after = Bitboard((occupancy.0 ^ from.bit().0 ^ captured.bit().0) | to.bit().0);
+            let own = self.state.colors[side.index()];
+            let pieces = &self.state.pieces;
+            let queens = pieces[PieceType::Queen.index()];
+            return (rook_attacks(king, after) & (pieces[PieceType::Rook.index()] | queens) & own)
+                .0
+                != 0
+                || (bishop_attacks(king, after)
+                    & (pieces[PieceType::Bishop.index()] | queens)
+                    & own)
+                    .0
+                    != 0;
+        }
+        false
+    }
+
+    /// Whether `mv` checks, found by placing the pieces as they stand after it.
+    fn gives_check_by_board(&self, mv: Move) -> bool {
         let side = self.state.side;
         let king = self.king(side.other());
         let own = self.state.colors[side.index()];
@@ -1699,4 +1755,51 @@ pub fn perft(position: &mut Position, depth: u8) -> u64 {
         position.unmake();
     }
     nodes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_detection_matches_the_board() {
+        let suites = [
+            include_str!("../../../tests/perft/standard.txt"),
+            include_str!("../../../tests/perft/chess960.txt"),
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut checked = 0;
+        for fen in suites
+            .iter()
+            .flat_map(|suite| suite.lines())
+            .filter_map(|line| line.splitn(4, '|').nth(3))
+        {
+            let mut position = Position::from_fen(fen).unwrap();
+            for _ in 0..60 {
+                let moves = position.legal_moves();
+                if moves.is_empty() {
+                    break;
+                }
+                for mv in moves.iter() {
+                    assert_eq!(
+                        position.gives_check(mv),
+                        position.gives_check_by_board(mv),
+                        "{} {}",
+                        position.fen(),
+                        position.format_move(mv, true)
+                    );
+                    let gives = position.gives_check(mv);
+                    position.make(mv);
+                    assert_eq!(position.checkers().0 != 0, gives, "{}", position.fen());
+                    position.unmake();
+                    checked += 1;
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                position.make(moves.get(seed as usize % moves.len()));
+            }
+        }
+        assert!(checked > 50_000, "{checked}");
+    }
 }
