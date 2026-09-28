@@ -909,6 +909,131 @@ impl Network {
         self.add_extras(position, perspective, values, psqt);
     }
 
+    /// Stockfish 19's hybrid update for a king move that stays on its half of the board,
+    /// where the threat features keep their orientation: the cached piece-square sums for
+    /// the new king square, plus the parent less the cached sums for the old square
+    /// brought to the pieces before the move, which leaves the parent's threat features,
+    /// plus the changed threats. Returns false where a full refresh is due instead.
+    #[allow(clippy::too_many_arguments)]
+    fn king_hybrid(
+        &self,
+        parent: &Accumulator,
+        values: &mut [i16; HALF],
+        psqt: &mut [i32; BUCKETS],
+        delta: &Delta,
+        after: &Position,
+        perspective: Color,
+        [threats_gone, pairs_gone, threats_new, pairs_new]: [&[u32]; 4],
+        cache: &mut RefreshCache,
+    ) -> bool {
+        let side = perspective.index();
+        let new_king = after.king(perspective);
+        let Some(&(_, old_king)) = delta.removed[..delta.removed_len]
+            .iter()
+            .find(|(piece, _)| piece.kind == PieceType::King && piece.color == perspective)
+        else {
+            return false;
+        };
+        if delta.added_len != 1
+            || (old_king.file() < 4) != (new_king.file() < 4)
+            || after.occupied().count() < 15
+        {
+            return false;
+        }
+        // The pieces before the move, from the pieces after it.
+        let mut previous = [[Bitboard::EMPTY; 6]; 2];
+        for color in [Color::White, Color::Black] {
+            for (index, kind) in PIECE_KINDS.into_iter().enumerate() {
+                previous[color.index()][index] = after.pieces(color, kind);
+            }
+        }
+        for &(piece, square) in delta.added[..delta.added_len]
+            .iter()
+            .chain(&delta.removed[..delta.removed_len])
+        {
+            let board = &mut previous[piece.color.index()][piece.kind.index()];
+            *board = *board ^ square.bit();
+        }
+        // Bring the new square's entry to the current pieces.
+        let new_entry = &mut cache.entries[side * 64 + new_king.index()];
+        for color in [Color::White, Color::Black] {
+            for (index, kind) in PIECE_KINDS.into_iter().enumerate() {
+                let now = after.pieces(color, kind);
+                let before = new_entry.pieces[color.index()][index];
+                let piece = Piece { color, kind };
+                for square in before & !now {
+                    let feature = feature(perspective, new_king, piece, square);
+                    self.toggle(&mut new_entry.values, &mut new_entry.psqt, feature, -1);
+                }
+                for square in now & !before {
+                    let feature = feature(perspective, new_king, piece, square);
+                    self.toggle(&mut new_entry.values, &mut new_entry.psqt, feature, 1);
+                }
+                new_entry.pieces[color.index()][index] = now;
+            }
+        }
+        let (new_values, new_psqt) = (new_entry.values, new_entry.psqt);
+        // What the old square's entry lacks of, or has beyond, the previous pieces.
+        let old_entry = &cache.entries[side * 64 + old_king.index()];
+        let mut old_removed = List::<32>::new();
+        let mut old_added = List::<32>::new();
+        for color in [Color::White, Color::Black] {
+            for (index, kind) in PIECE_KINDS.into_iter().enumerate() {
+                let cached = old_entry.pieces[color.index()][index];
+                let wanted = previous[color.index()][index];
+                let piece = Piece { color, kind };
+                for square in cached & !wanted {
+                    old_removed.push(feature(perspective, old_king, piece, square) as u32);
+                }
+                for square in wanted & !cached {
+                    old_added.push(feature(perspective, old_king, piece, square) as u32);
+                }
+            }
+        }
+        if old_removed.overflowed || old_added.overflowed {
+            return false;
+        }
+        let mut base = [0_i16; HALF];
+        for (index, slot) in base.iter_mut().enumerate() {
+            *slot = parent.values[side][index]
+                .wrapping_add(new_values[index])
+                .wrapping_sub(old_entry.values[index]);
+        }
+        for bucket in 0..BUCKETS {
+            psqt[bucket] = parent.psqt[side][bucket] + new_psqt[bucket] - old_entry.psqt[bucket];
+        }
+        for (rows, sign) in [(&old_removed, 1), (&old_added, -1)] {
+            for &feature in rows.as_slice() {
+                for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
+                    *value += sign * weight;
+                }
+            }
+        }
+        let indexer = Indexer::new(perspective, new_king);
+        let mut extra_gone = List::<{ 2 * TOUCHING }>::new();
+        let mut extra_new = List::<{ 2 * TOUCHING }>::new();
+        indexer.features(threats_gone, pairs_gone, &mut extra_gone);
+        indexer.features(threats_new, pairs_new, &mut extra_new);
+        for (rows, sign) in [(&extra_gone, -1), (&extra_new, 1)] {
+            for &feature in rows.as_slice() {
+                let weights = self.extra_psqt_row(feature as usize);
+                for (value, &weight) in psqt.iter_mut().zip(weights) {
+                    *value += sign * weight;
+                }
+            }
+        }
+        update_values(
+            values,
+            &base,
+            self,
+            old_added.as_slice(),
+            old_removed.as_slice(),
+            extra_gone.as_slice(),
+            extra_new.as_slice(),
+        );
+        true
+    }
+
     /// Derives the accumulator after a move from the one before it; `after` is the
     /// position once the move is made.
     pub fn apply(
@@ -930,11 +1055,32 @@ impl Network {
         for perspective in [Color::White, Color::Black] {
             let side = perspective.index();
             let (values, psqt) = (&mut child.values[side], &mut child.psqt[side]);
-            if overflowed || delta.king_moved == Some(perspective) {
+            if overflowed {
                 self.refresh_cached(after, perspective, values, psqt, cache);
                 continue;
             }
             let king = after.king(perspective);
+            if delta.king_moved == Some(perspective) {
+                let extras = [
+                    threats_gone.as_slice(),
+                    pairs_gone.as_slice(),
+                    threats_new.as_slice(),
+                    pairs_new.as_slice(),
+                ];
+                if !self.king_hybrid(
+                    parent,
+                    values,
+                    psqt,
+                    delta,
+                    after,
+                    perspective,
+                    extras,
+                    cache,
+                ) {
+                    self.refresh_cached(after, perspective, values, psqt, cache);
+                }
+                continue;
+            }
             let index = |&(piece, square): &(Piece, Square)| {
                 feature(perspective, king, piece, square) as u32
             };
