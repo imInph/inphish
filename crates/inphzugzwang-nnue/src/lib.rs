@@ -95,16 +95,25 @@ impl Output {
     /// parts disagree, scaled up with the material left and damped by the fifty-move
     /// counter, kept below the tablebase range.
     pub fn evaluation(&self, position: &Position) -> i32 {
-        let nnue = self.psqt + self.positional;
-        let complexity = (self.psqt - self.positional).abs();
-        let nnue = nnue - (i64::from(nnue) * i64::from(complexity) / 18_236) as i32;
+        self.evaluation_with_optimism(position, 0)
+    }
+
+    /// Stockfish 19's `Eval::evaluate`, where `optimism` for the side to move, set from
+    /// the root score, leans the evaluation toward that side, more so where the two parts
+    /// of the output disagree.
+    pub fn evaluation_with_optimism(&self, position: &Position, optimism: i32) -> i32 {
+        let nnue = i64::from(self.psqt + self.positional);
+        let complexity = i64::from((self.psqt - self.positional).abs());
+        let optimism = i64::from(optimism);
+        let optimism = optimism + optimism * complexity / 476;
+        let nnue = nnue - nnue * complexity / 18_236;
         let pawns = (position.pieces(Color::White, PieceType::Pawn)
             | position.pieces(Color::Black, PieceType::Pawn))
-        .count() as i32;
-        let material = 534 * pawns + non_pawn_material(position);
-        let value = nnue + (i64::from(nnue) * i64::from(material) / 91_000) as i32;
-        let value = value - value * i32::from(position.halfmove_clock()) / 199;
-        value.clamp(-31_506, 31_506)
+        .count() as i64;
+        let material = 534 * pawns + i64::from(non_pawn_material(position));
+        let value = nnue + (nnue * material + optimism * 7675) / 91_000;
+        let value = value - value * i64::from(position.halfmove_clock()) / 199;
+        value.clamp(-31_506, 31_506) as i32
     }
 }
 
