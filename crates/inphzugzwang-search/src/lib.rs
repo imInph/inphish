@@ -76,6 +76,25 @@ pub struct Control {
     pub ponderhit: Arc<AtomicBool>,
 }
 
+/// Statistics a search thread learns and keeps for later moves of the same game: the
+/// move-ordering histories and the evaluation correction.
+pub(crate) struct Memory {
+    histories: Histories,
+    correction: Box<[[i32; CORRECTION_ENTRIES]; 2]>,
+}
+
+impl Memory {
+    fn new() -> Self {
+        Self {
+            histories: Histories::new(),
+            correction: vec![[0; CORRECTION_ENTRIES]; 2]
+                .into_boxed_slice()
+                .try_into()
+                .expect("two sides"),
+        }
+    }
+}
+
 struct Search<'a> {
     position: Position,
     limits: Limits,
@@ -89,8 +108,7 @@ struct Search<'a> {
     tbhits: u64,
     seldepth: usize,
     aborted: bool,
-    histories: Histories,
-    correction: Box<[[i32; CORRECTION_ENTRIES]; 2]>,
+    memory: Memory,
     stack: Box<[Frame]>,
     /// Late move reduction factors by depth or move number, as in Stockfish.
     reductions: Box<[i32]>,
@@ -173,6 +191,7 @@ pub fn search_with_table(
                     let mut worker =
                         Search::new(position, helper_limits, helper_control, tt, shared_nodes);
                     worker.help(1 + (index % 2) as u8);
+                    tt.keep_memory(worker.memory);
                 })
                 .expect("helper thread could not start");
         }
@@ -197,13 +216,26 @@ fn search_main(
     tt: &TranspositionTable,
     shared_nodes: &AtomicU64,
     root_tb_score: Option<i32>,
-    mut on_info: impl FnMut(Info),
+    on_info: impl FnMut(Info),
 ) -> Result {
     let seed = position.key()
         ^ std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos() as u64);
     let mut worker = Search::new(position, limits, control, tt, shared_nodes);
+    let result = iterate(&mut worker, seed, root_tb_score, on_info);
+    tt.keep_memory(worker.memory);
+    result
+}
+
+/// Iterative deepening on the main thread, which reports, manages time and chooses the
+/// move.
+fn iterate(
+    worker: &mut Search,
+    seed: u64,
+    root_tb_score: Option<i32>,
+    mut on_info: impl FnMut(Info),
+) -> Result {
     let candidates = worker.root_moves();
     let fallback = candidates.first().copied();
     let mut completed = Info {
@@ -621,11 +653,7 @@ impl<'a> Search<'a> {
             tbhits: 0,
             seldepth: 0,
             aborted: false,
-            histories: Histories::new(),
-            correction: vec![[0; CORRECTION_ENTRIES]; 2]
-                .into_boxed_slice()
-                .try_into()
-                .expect("two sides"),
+            memory: tt.take_memory(),
             stack: vec![Frame::default(); MAX_PLY + FRAME_OFFSET + 4].into_boxed_slice(),
             reductions,
             root_depth: 0,
@@ -910,8 +938,9 @@ impl<'a> Search<'a> {
             let before = self.nodes;
             let capture = is_capture(mv);
             let square = moved_square(&self.position, mv);
-            let stat_score =
-                2 * self.histories.main(side, mv) + self.continuation_score(0, square) - 4433;
+            let stat_score = 2 * self.memory.histories.main(side, mv)
+                + self.continuation_score(0, square)
+                - 4433;
             self.make(mv, 0);
             let new_depth = depth - 1;
             let mut score;
@@ -1050,7 +1079,8 @@ impl<'a> Search<'a> {
         [1, 2, 4]
             .into_iter()
             .map(|back| {
-                self.histories
+                self.memory
+                    .histories
                     .continuation(self.at(ply, back).continuation, square)
             })
             .sum()
@@ -1080,7 +1110,9 @@ impl<'a> Search<'a> {
             let frame = self.at(ply, back);
             if frame.mv != Move::NULL {
                 let table = frame.continuation;
-                self.histories.update_continuation(table, square, bonus);
+                self.memory
+                    .histories
+                    .update_continuation(table, square, bonus);
             }
         }
     }
@@ -1092,11 +1124,11 @@ impl<'a> Search<'a> {
             frame.killers[0] = mv;
         }
         let side = self.position.side_to_move().index();
-        self.histories.update_main(side, mv, bonus);
+        self.memory.histories.update_main(side, mv, bonus);
         let square = moved_square(&self.position, mv);
         self.update_continuations(ply, square, bonus);
         if let Some(previous) = self.previous_square(ply) {
-            self.histories.set_counter(previous, mv);
+            self.memory.histories.set_counter(previous, mv);
         }
     }
 
@@ -1116,7 +1148,7 @@ impl<'a> Search<'a> {
         if is_capture(best_move) {
             let square = moved_square(&self.position, best_move);
             let victim = victim_slot(victim(&self.position, best_move));
-            self.histories.update_capture(square, victim, bonus);
+            self.memory.histories.update_capture(square, victim, bonus);
         } else {
             let quiet_bonus = if best > beta + v(137) {
                 bonus
@@ -1125,7 +1157,7 @@ impl<'a> Search<'a> {
             };
             self.update_quiet_stats(ply, best_move, quiet_bonus);
             for &mv in quiets {
-                self.histories.update_main(side, mv, -quiet_bonus);
+                self.memory.histories.update_main(side, mv, -quiet_bonus);
                 let square = moved_square(&self.position, mv);
                 self.update_continuations(ply, square, -quiet_bonus);
             }
@@ -1143,7 +1175,7 @@ impl<'a> Search<'a> {
         for &mv in captures {
             let square = moved_square(&self.position, mv);
             let victim = victim_slot(victim(&self.position, mv));
-            self.histories.update_capture(square, victim, -bonus);
+            self.memory.histories.update_capture(square, victim, -bonus);
         }
     }
 
@@ -1235,7 +1267,7 @@ impl<'a> Search<'a> {
                     }
                 } else if !tt_capture {
                     let penalty = -stat_bonus(depth);
-                    self.histories.update_main(us, tt_move, penalty);
+                    self.memory.histories.update_main(us, tt_move, penalty);
                     let square = moved_square(&self.position, tt_move);
                     self.update_continuations(ply, square, penalty);
                 }
@@ -1324,7 +1356,8 @@ impl<'a> Search<'a> {
             {
                 let swing = (previous.static_eval + static_eval) * 208 / 100;
                 let bonus = (-19 * swing).clamp(-1914, 1914);
-                self.histories
+                self.memory
+                    .histories
                     .update_main(side.other().index(), previous.mv, bonus);
             }
             let improvement = if self.at(ply, 2).static_eval != VALUE_NONE {
@@ -1407,7 +1440,7 @@ impl<'a> Search<'a> {
             {
                 let threshold = (probcut_beta - static_eval) * 208 / 100;
                 let mut picker = Picker::probcut(&self.position, tt_move, threshold);
-                while let Some(mv) = picker.next(&self.position, &self.histories, false) {
+                while let Some(mv) = picker.next(&self.position, &self.memory.histories, false) {
                     if mv == excluded {
                         continue;
                     }
@@ -1471,7 +1504,8 @@ impl<'a> Search<'a> {
             return probcut_beta;
         }
         let continuations = self.continuations(ply);
-        let counter = previous_square.map_or(Move::NULL, |square| self.histories.counter(square));
+        let counter =
+            previous_square.map_or(Move::NULL, |square| self.memory.histories.counter(square));
         let killers = self.at(ply, 0).killers;
         let mut picker = Picker::main(
             &self.position,
@@ -1493,7 +1527,8 @@ impl<'a> Search<'a> {
         let mut captures = [Move::NULL; 32];
         let mut capture_count = 0;
         let non_pawn = self.position.has_non_pawn_material(side);
-        while let Some(mv) = picker.next(&self.position, &self.histories, move_count_pruning) {
+        while let Some(mv) = picker.next(&self.position, &self.memory.histories, move_count_pruning)
+        {
             if mv == excluded {
                 continue;
             }
@@ -1519,7 +1554,7 @@ impl<'a> Search<'a> {
                             + v(180
                                 + 201 * lmr_depth
                                 + taken.map_or(0, |kind| ENDGAME[kind.index()])
-                                + self.histories.capture(square, victim_slot(taken)) / 6)
+                                + self.memory.histories.capture(square, victim_slot(taken)) / 6)
                             < alpha
                     {
                         continue;
@@ -1532,7 +1567,7 @@ impl<'a> Search<'a> {
                     if lmr_depth < 5 && history < -3875 * (depth - 1) {
                         continue;
                     }
-                    history += 2 * self.histories.main(us, mv);
+                    history += 2 * self.memory.histories.main(us, mv);
                     if !in_check
                         && lmr_depth < 13
                         && static_eval + v(106 + 145 * lmr_depth + history / 52) <= alpha
@@ -1601,7 +1636,7 @@ impl<'a> Search<'a> {
                     || (PV
                         && mv == tt_move
                         && mv == killers[0]
-                        && self.histories.continuation(continuations[0], square) >= 5177)
+                        && self.memory.histories.continuation(continuations[0], square) >= 5177)
                 {
                     extension = 1;
                 }
@@ -1609,8 +1644,9 @@ impl<'a> Search<'a> {
             new_depth += extension;
             self.at_mut(ply, 0).double_extensions =
                 self.at(ply, 1).double_extensions + i32::from(extension == 2);
-            let stat_score =
-                2 * self.histories.main(us, mv) + self.continuation_score(ply, square) - 4433;
+            let stat_score = 2 * self.memory.histories.main(us, mv)
+                + self.continuation_score(ply, square)
+                - 4433;
             let threatened = picker.threatened.contains(mv.from());
             self.make(mv, ply);
             let mut value = -INF;
@@ -1784,14 +1820,14 @@ impl<'a> Search<'a> {
     /// found for it is added back to later evaluations of positions sharing it.
     fn corrected(&self, raw: i32) -> i32 {
         let (side, slot) = self.correction_slot();
-        let correction = self.correction[side][slot] / CORRECTION_GRAIN;
+        let correction = self.memory.correction[side][slot] / CORRECTION_GRAIN;
         (raw + correction).clamp(-TB_WIN_IN_MAX_PLY + 1, TB_WIN_IN_MAX_PLY - 1)
     }
 
     fn update_correction(&mut self, error: i32, depth: i32) {
         let weight = (depth + 1).min(16);
         let (side, slot) = self.correction_slot();
-        let entry = &mut self.correction[side][slot];
+        let entry = &mut self.memory.correction[side][slot];
         *entry = ((*entry * (256 - weight) + error * CORRECTION_GRAIN * weight) / 256)
             .clamp(-CORRECTION_MAX, CORRECTION_MAX);
     }
@@ -1892,7 +1928,7 @@ impl<'a> Search<'a> {
         let mut best_move = Move::NULL;
         let mut move_count = 0;
         let mut quiet_evasions = 0;
-        while let Some(mv) = picker.next(&self.position, &self.histories, false) {
+        while let Some(mv) = picker.next(&self.position, &self.memory.histories, false) {
             let gives_check = self.position.gives_check(mv);
             let capture = is_capture(mv);
             move_count += 1;
@@ -1922,8 +1958,8 @@ impl<'a> Search<'a> {
             let square = moved_square(&self.position, mv);
             if !capture
                 && best > -TB_WIN_IN_MAX_PLY
-                && self.histories.continuation(continuations[0], square) < 0
-                && self.histories.continuation(continuations[1], square) < 0
+                && self.memory.histories.continuation(continuations[0], square) < 0
+                && self.memory.histories.continuation(continuations[1], square) < 0
             {
                 continue;
             }

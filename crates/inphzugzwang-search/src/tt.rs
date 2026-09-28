@@ -1,6 +1,9 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 use inphzugzwang_core::Move;
+
+use crate::Memory;
 
 const ENTRIES_PER_CLUSTER: usize = 4;
 const CLUSTER_BYTES: usize = 64;
@@ -79,9 +82,12 @@ impl Default for Cluster {
     }
 }
 
+/// The shared transposition table, which also keeps each search thread's statistics
+/// between moves, so that both are cleared together.
 pub struct TranspositionTable {
     clusters: Box<[Cluster]>,
     age: AtomicU8,
+    memories: Mutex<Vec<Memory>>,
 }
 
 impl TranspositionTable {
@@ -96,7 +102,24 @@ impl TranspositionTable {
         Some(Self {
             clusters: clusters.into_boxed_slice(),
             age: AtomicU8::new(0),
+            memories: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Statistics kept from an earlier search, or new ones.
+    pub(super) fn take_memory(&self) -> Memory {
+        self.memories
+            .lock()
+            .ok()
+            .and_then(|mut memories| memories.pop())
+            .unwrap_or_else(Memory::new)
+    }
+
+    /// Keeps a search thread's statistics for the next search.
+    pub(super) fn keep_memory(&self, memory: Memory) {
+        if let Ok(mut memories) = self.memories.lock() {
+            memories.push(memory);
+        }
     }
 
     pub fn next_generation(&self) {
