@@ -128,13 +128,15 @@ pub fn run() -> io::Result<()> {
                         |mv| active.position.format_move(mv, active.chess960),
                     );
                     let mut line = format!("bestmove {best}");
-                    if result.info.pv.len() > 1 {
+                    if result.info.pv.len() > 1 && active.position.is_legal(result.info.pv[0]) {
                         let mut after = active.position.clone();
                         after.make(result.info.pv[0]);
-                        line.push_str(&format!(
-                            " ponder {}",
-                            after.format_move(result.info.pv[1], active.chess960)
-                        ));
+                        if after.is_legal(result.info.pv[1]) {
+                            line.push_str(&format!(
+                                " ponder {}",
+                                after.format_move(result.info.pv[1], active.chess960)
+                            ));
+                        }
                     }
                     write_line(&mut output, &line)?;
                     if !engine.quitting {
@@ -591,8 +593,12 @@ fn format_info(position: &Position, chess960: bool, show_wdl: bool, info: &Info)
         "info depth {} seldepth {} multipv {} score {score} nodes {} nps {} hashfull {} tbhits {} time {} pv",
         info.depth, info.seldepth, info.multipv.max(1), info.nodes, nps, info.hashfull, info.tbhits, millis
     );
+    // A line is printed only as far as its moves are legal.
     let mut after = position.clone();
     for &mv in &info.pv {
+        if !after.is_legal(mv) {
+            break;
+        }
         line.push(' ');
         line.push_str(&after.format_move(mv, chess960));
         after.make(mv);

@@ -1429,13 +1429,13 @@ impl<'a> Worker<'a> {
             return self.quiescence::<PV>(alpha, beta, ply);
         }
         depth = depth.min(MAX_PLY as i32 - 1);
+        self.pv_len[ply] = 0;
         if !ROOT && alpha < 0 && self.position.upcoming_repetition(ply) {
             alpha = self.value_draw();
             if alpha >= beta {
                 return alpha;
             }
         }
-        self.pv_len[ply] = 0;
         let in_check = self.position.checkers().0 != 0;
         let prior_capture = self.position.captured_piece().is_some();
         let side = self.position.side_to_move();
@@ -2189,13 +2189,13 @@ impl<'a> Worker<'a> {
     /// or evasions in check, until the position is quiet; stand pat when not in check.
     #[allow(clippy::too_many_lines)]
     fn quiescence<const PV: bool>(&mut self, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+        self.pv_len[ply] = 0;
         if alpha < 0 && self.position.upcoming_repetition(ply) {
             alpha = self.value_draw();
             if alpha >= beta {
                 return alpha;
             }
         }
-        self.pv_len[ply] = 0;
         let in_check = self.position.checkers().0 != 0;
         self.at_mut(ply, 0).in_check = in_check;
         if PV && self.sel_depth < ply + 1 {
@@ -2459,6 +2459,40 @@ mod tests {
         let position = Position::startpos();
         let result = search(position, Limits::default(), &control, |_| {});
         assert!(result.best.is_some());
+    }
+
+    /// Lines reported where repetitions are available are made of legal moves; an early
+    /// return on an upcoming repetition once left a stale line behind.
+    #[test]
+    fn reported_lines_are_legal_with_repetitions_available() {
+        let mut position = Position::startpos();
+        for text in [
+            "g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "b1c3", "b8c6", "c3b1", "c6b8",
+        ] {
+            let mv = position.parse_move(text, false).expect(text);
+            position.make(mv);
+        }
+        let quiet_endgame = Position::from_fen("8/5k2/3r4/8/8/3R4/5K2/8 w - - 0 60").unwrap();
+        for position in [position, quiet_endgame] {
+            let mut lines = Vec::new();
+            search(
+                position.clone(),
+                Limits {
+                    depth: Some(16),
+                    multipv: 3,
+                    ..Limits::default()
+                },
+                &control(),
+                |info| lines.push(info.pv),
+            );
+            for line in lines {
+                let mut after = position.clone();
+                for mv in line {
+                    assert!(after.is_legal(mv), "{}", after.fen());
+                    after.make(mv);
+                }
+            }
+        }
     }
 
     #[test]
