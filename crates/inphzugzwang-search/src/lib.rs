@@ -22,7 +22,7 @@ use history::{
     NO_PIECE_SQUARE, SENTINEL,
 };
 use picker::{
-    is_capture, is_capture_stage, moved_square, victim, victim_slot, victim_value, Picker,
+    is_capture, is_capture_stage, moved_square, target, victim, victim_slot, victim_value, Picker,
     PIECE_VALUES,
 };
 pub use tt::TranspositionTable;
@@ -690,6 +690,20 @@ fn weakened_choice(lines: &[Info], elo: u16, seed: u64) -> usize {
     chosen
 }
 
+/// The key under which a position is stored in the table: from a fifty-move counter of
+/// 14 on it changes every eight plies, as Stockfish's `adjust_key50` does, so that results
+/// do not carry over between the same position at very different distances from the rule.
+fn table_key(position: &Position) -> u64 {
+    let rule50 = u64::from(position.halfmove_clock());
+    if rule50 < 14 {
+        return position.key();
+    }
+    let bucket = ((rule50 - 14) / 8)
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    position.key() ^ bucket
+}
+
 /// A mate or tablebase score is stored relative to the node rather than the root.
 fn value_to_tt(value: i32, ply: usize) -> i32 {
     if is_win(value) {
@@ -938,7 +952,7 @@ impl<'a> Worker<'a> {
         }
         let delta = inphzugzwang_nnue::delta(&self.position, mv);
         self.position.make(mv);
-        self.tt.prefetch(self.position.key());
+        self.tt.prefetch(table_key(&self.position));
         if network().prepare(&delta, &self.position, &mut self.updates[ply + 1]) {
             self.computed[ply + 1] = false;
         } else {
@@ -1116,7 +1130,7 @@ impl<'a> Worker<'a> {
         }
         if is_capture_stage(best_move) {
             let square = moved_square(&self.position, best_move);
-            let taken = victim_slot(victim(&self.position, best_move));
+            let taken = victim_slot(target(&self.position, best_move));
             self.memory
                 .histories
                 .update_capture(square, taken, bonus * 1427 / 1024);
@@ -1140,7 +1154,7 @@ impl<'a> Worker<'a> {
         }
         for &mv in captures {
             let square = moved_square(&self.position, mv);
-            let taken = victim_slot(victim(&self.position, mv));
+            let taken = victim_slot(target(&self.position, mv));
             self.memory
                 .histories
                 .update_capture(square, taken, -malus * 1489 / 1024);
@@ -1202,7 +1216,9 @@ impl<'a> Worker<'a> {
         let main = self.is_main();
         let us = self.position.side_to_move().index();
         let previous = self.tt.previous();
-        let (previous_score, previous_average) = previous.score.unwrap_or((0, 0));
+        // With no earlier search in the game the falling-eval term takes its maximum, as
+        // Stockfish's does on the first move.
+        let (previous_score, previous_average) = previous.score.unwrap_or((0, VALUE_INFINITE));
         let mut iteration_scores = [previous_score; 4];
         let mut iteration_index = 0;
         let mut last_best_pv: Vec<Move> = Vec::new();
@@ -1367,8 +1383,7 @@ impl<'a> Worker<'a> {
                 || self.root_moves[0].score == mated_in(2);
             self.refresh_ponder();
             if let (Some(optimum), false) = (self.optimum, self.stopped() || self.limits.infinite) {
-                let effort =
-                    self.root_moves[0].effort as f64 * 100_000.0 / self.nodes.max(1) as f64;
+                let effort = (self.root_moves[0].effort * 100_000 / self.nodes.max(1)) as f64;
                 let falling = ((11.48
                     + 2.30 * f64::from(previous_average - best_value)
                     + 1.1 * f64::from(iteration_scores[iteration_index] - best_value))
@@ -1484,7 +1499,7 @@ impl<'a> Worker<'a> {
         // Transposition table lookup. A stored move that is not legal here marks a key
         // collision, and the entry is ignored.
         let excluded = self.at(ply, 0).excluded;
-        let key = self.position.key();
+        let key = table_key(&self.position);
         let rule50 = i32::from(self.position.halfmove_clock());
         let hit = self
             .tt
@@ -1576,7 +1591,7 @@ impl<'a> Worker<'a> {
                 if depth >= 7 && tt_move != Move::NULL && !is_decisive(tt_value) {
                     // The cutoff stands if the position after the table move agrees.
                     self.position.make(tt_move);
-                    let next = self.tt.probe(self.position.key());
+                    let next = self.tt.probe(table_key(&self.position));
                     self.position.unmake();
                     match next.filter(|record| is_valid(record.score)) {
                         None => return tt_value,
@@ -1801,6 +1816,7 @@ impl<'a> Worker<'a> {
             let square = moved_square(&self.position, mv);
             let gives_check = self.position.gives_check(mv);
             let taken = victim(&self.position, mv);
+            let on_target = target(&self.position, mv);
             let mut new_depth = depth - 1;
             let delta = beta - alpha;
             let mut r = self.reduction(improving, depth, move_count, delta);
@@ -1814,12 +1830,15 @@ impl<'a> Worker<'a> {
                 }
                 let mut lmr_depth = new_depth - r / 1024;
                 if capture || gives_check {
-                    let capture_history = self.memory.histories.capture(square, victim_slot(taken));
+                    let capture_history = self
+                        .memory
+                        .histories
+                        .capture(square, victim_slot(on_target));
                     if !gives_check && lmr_depth < 8 {
                         let futility = static_eval
                             + 234
                             + 247 * lmr_depth
-                            + victim_value(taken)
+                            + victim_value(on_target)
                             + 134 * capture_history / 1024;
                         if futility <= alpha {
                             continue;
@@ -2015,10 +2034,13 @@ impl<'a> Worker<'a> {
                 let squared_weight = weight.min(16) as i64;
                 let (weight, value64) = (weight as i64, i64::from(value));
                 let squared = value64 * value64.abs();
+                // Stockfish computes these averages in unsigned arithmetic, which rounds
+                // negative results down rather than toward zero.
                 root.average_score = if root.average_score == -VALUE_INFINITE {
                     value
                 } else {
-                    ((value64 * weight + i64::from(root.average_score) * (32 - weight)) / 32) as i32
+                    ((value64 * weight + i64::from(root.average_score) * (32 - weight))
+                        .div_euclid(32)) as i32
                 };
                 root.mean_squared_score = if root.mean_squared_score
                     == -i64::from(VALUE_INFINITE) * i64::from(VALUE_INFINITE)
@@ -2026,7 +2048,7 @@ impl<'a> Worker<'a> {
                     squared
                 } else {
                     (squared * squared_weight + root.mean_squared_score * (32 - squared_weight))
-                        / 32
+                        .div_euclid(32)
                 };
                 if move_count == 1 || value > alpha {
                     root.score = value;
@@ -2208,7 +2230,7 @@ impl<'a> Worker<'a> {
                 0
             };
         }
-        let key = self.position.key();
+        let key = table_key(&self.position);
         let rule50 = i32::from(self.position.halfmove_clock());
         let hit = self
             .tt

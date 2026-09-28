@@ -1141,8 +1141,8 @@ impl Position {
             key ^= hash_word(0x2000 + ep.file() as u64);
         }
         self.history.push(self.state);
+        // As in Stockfish, a null move leaves the fifty-move counter alone.
         self.state.ep = None;
-        self.state.halfmove = self.state.halfmove.saturating_add(1);
         self.state.side = self.state.side.other();
         // A null move breaks any repetition cycle; positions on either side of it must not match.
         self.state.reversible_start = self.history.len();

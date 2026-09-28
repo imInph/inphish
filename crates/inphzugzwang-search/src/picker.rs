@@ -36,6 +36,12 @@ pub(super) fn victim(position: &Position, mv: Move) -> Option<PieceType> {
     }
 }
 
+/// The kind on a move's destination, which Stockfish's ordering and pruning take for the
+/// captured piece before the move is made: none for en passant.
+pub(super) fn target(position: &Position, mv: Move) -> Option<PieceType> {
+    position.piece_at(mv.to()).map(|piece| piece.kind)
+}
+
 /// Capture-history slot of the captured kind: its index plus one, zero for none.
 pub(super) fn victim_slot(victim: Option<PieceType>) -> usize {
     victim.map_or(0, |kind| kind.index() + 1)
@@ -283,9 +289,9 @@ impl Picker {
     /// Capture history plus seven times the victim's value.
     fn score_captures(&mut self, position: &Position, histories: &Histories) {
         for entry in self.captures.entries_mut() {
-            let victim = victim(position, entry.mv);
-            entry.score = histories.capture(moved_square(position, entry.mv), victim_slot(victim))
-                + 7 * victim_value(victim);
+            let target = target(position, entry.mv);
+            entry.score = histories.capture(moved_square(position, entry.mv), victim_slot(target))
+                + 7 * victim_value(target);
         }
     }
 
@@ -365,7 +371,7 @@ impl Picker {
         for entry in self.captures.entries_mut() {
             let mv = entry.mv;
             entry.score = if is_capture_stage(mv) {
-                victim_value(victim(position, mv)) + (1 << 28)
+                victim_value(target(position, mv)) + (1 << 28)
             } else {
                 histories.main(side, mv)
                     + histories.continuation(previous, moved_square(position, mv))

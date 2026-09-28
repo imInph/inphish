@@ -134,7 +134,7 @@ impl Default for Previous {
     fn default() -> Self {
         Self {
             score: None,
-            time_reduction: 1.0,
+            time_reduction: 0.85,
             time_adjust: None,
         }
     }
