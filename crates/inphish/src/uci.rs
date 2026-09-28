@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use inphzugzwang_book::{built_in, Book};
 use inphzugzwang_core::{Color, Move, Position};
 use inphzugzwang_search::{
-    search_with_table, uci_score, wdl, Control, Info, Limits, TranspositionTable, STRENGTH_MAX,
-    STRENGTH_MIN,
+    search_with_table, uci_score, wdl, Clock, Control, Info, Limits, TranspositionTable,
+    STRENGTH_MAX, STRENGTH_MIN,
 };
 use inphzugzwang_syzygy::Tablebases;
 
@@ -246,7 +246,7 @@ impl Engine {
                 let depth = words
                     .get(1)
                     .and_then(|word| word.parse::<u8>().ok())
-                    .unwrap_or(10);
+                    .unwrap_or(13);
                 if let Ok((nodes, nps)) = bench::measure(depth.max(1)) {
                     eprintln!("{nodes} nodes {nps} nps");
                 }
@@ -549,55 +549,16 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
                 // Spawning the search thread costs microseconds, so only a clock already inside the
                 // overhead margin skips the search; anything more still buys a few plies.
                 limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(30);
-                let (optimum, maximum) = allocate(
-                    remaining,
+                limits.clock = Some(Clock {
+                    time: remaining,
                     increment,
                     movestogo,
                     overhead,
-                    position.game_ply(),
-                );
-                limits.soft = Some(Duration::from_millis(optimum));
-                limits.hard = Some(Duration::from_millis(maximum));
+                });
             }
         }
     }
     limits
-}
-
-/// Stockfish's time allocation: an optimum the search aims for, which it scales by how
-/// settled the best move is, and a maximum it never exceeds, from the clock, increment,
-/// moves to go (up to 50 assumed) and game ply, all in milliseconds.
-fn allocate(
-    time: u64,
-    increment: u64,
-    movestogo: Option<u64>,
-    overhead: u64,
-    ply: u32,
-) -> (u64, u64) {
-    let (time_ms, increment, overhead) = (time as f64, increment as f64, overhead as f64);
-    let horizon = movestogo.map_or(50.0, |moves| moves.min(50) as f64);
-    let left = (time_ms + increment * (horizon - 1.0) - overhead * (2.0 + horizon)).max(1.0);
-    let ply = f64::from(ply);
-    let (optimum_scale, maximum_scale) = if movestogo.is_none() {
-        let log_time = (time_ms / 1000.0).max(0.001).log10();
-        let optimum_constant = (0.00308 + 0.000319 * log_time).min(0.00506);
-        let maximum_constant = (3.39 + 3.01 * log_time).max(2.93);
-        (
-            (0.0122 + (ply + 2.95).powf(0.462) * optimum_constant).min(0.213 * time_ms / left),
-            (maximum_constant + ply / 12.0).min(6.64),
-        )
-    } else {
-        (
-            ((0.88 + ply / 116.4) / horizon).min(0.88 * time_ms / left),
-            (1.3 + 0.11 * horizon).min(8.45),
-        )
-    };
-    let optimum = optimum_scale * left;
-    // Never past 82.5% of the clock, and always a margin short of it.
-    let ceiling = (time_ms - overhead - 5.0).max(1.0);
-    let maximum =
-        ((0.825 * time_ms - overhead).min(maximum_scale * optimum) - 10.0).clamp(1.0, ceiling);
-    (optimum.clamp(1.0, maximum) as u64, maximum as u64)
 }
 
 fn is_go_key(word: &str) -> bool {
@@ -678,7 +639,9 @@ mod tests {
             20,
             false,
         );
-        assert!(limits.hard.is_some());
+        assert!(limits
+            .clock
+            .is_some_and(|clock| clock.time == 60_000 && clock.increment == 100));
         assert_eq!(limits.searchmoves.len(), 2);
     }
 

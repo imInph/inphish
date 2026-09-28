@@ -1,20 +1,27 @@
-//! Move-ordering statistics, laid out and updated as in Stockfish 15.1 (GPL-3.0,
-//! https://github.com/official-stockfish/Stockfish): butterfly history by side and
-//! from-to squares, capture history by moving piece, destination and captured kind, and
-//! continuation history of a move given the move played one, two, four or six plies
-//! earlier.
+//! Move-ordering and evaluation-correction statistics laid out, initialised and updated
+//! as in Stockfish 19 (GPL-3.0, https://github.com/official-stockfish/Stockfish).
 
 use inphzugzwang_core::{Move, Piece};
 
 const MAIN_LIMIT: i32 = 7183;
 const CAPTURE_LIMIT: i32 = 10_692;
-const CONTINUATION_LIMIT: i32 = 29_952;
+const CONTINUATION_LIMIT: i32 = 30_000;
+const PAWN_LIMIT: i32 = 8192;
+pub(super) const CORRECTION_LIMIT: i32 = 1024;
+const TT_MOVE_LIMIT: i32 = 8192;
+/// Plies near the root with a history of their own.
+pub(super) const LOW_PLY: usize = 5;
+const MOVE_SLOTS: usize = 1 << 16;
+const PAWN_SLOTS: usize = 8192;
+const CORRECTION_SLOTS: usize = 1 << 16;
 /// A piece and its destination: twelve pieces by 64 squares.
 pub(super) const PIECE_SQUARES: usize = 12 * 64;
 /// Continuation tables, one per earlier move by check state, capture, piece and square,
 /// plus a sentinel read for plies without a move and never updated.
 const CONTINUATION_TABLES: usize = 2 * 2 * PIECE_SQUARES + 1;
 pub(super) const SENTINEL: usize = CONTINUATION_TABLES - 1;
+/// The continuation-correction row read for plies without a move.
+pub(super) const NO_PIECE_SQUARE: usize = PIECE_SQUARES;
 
 pub(super) fn piece_index(piece: Piece) -> usize {
     piece.color.index() * 6 + piece.kind.index()
@@ -38,54 +45,100 @@ fn gravity(entry: &mut i16, bonus: i32, limit: i32) {
     *entry = (value + bonus - value * bonus.abs() / limit) as i16;
 }
 
+/// The four structure corrections kept per slot and side.
+#[derive(Clone, Copy)]
+pub(super) enum Correction {
+    Pawn = 0,
+    Minor = 1,
+    WhiteNonPawn = 2,
+    BlackNonPawn = 3,
+}
+
 pub(super) struct Histories {
     main: Box<[i16]>,
+    low_ply: Box<[i16]>,
     capture: Box<[i16]>,
     continuation: Box<[i16]>,
-    counters: Box<[Move]>,
+    pawn: Box<[i16]>,
+    correction: Box<[[[i16; 4]; 2]]>,
+    continuation_correction: Box<[i16]>,
+    tt_move: i16,
 }
 
 impl Histories {
     pub(super) fn new() -> Self {
-        let mut continuation = vec![-71; CONTINUATION_TABLES * PIECE_SQUARES];
-        continuation[SENTINEL * PIECE_SQUARES..].fill(0);
         Self {
-            main: vec![0; 2 * 64 * 64].into_boxed_slice(),
-            capture: vec![0; PIECE_SQUARES * 7].into_boxed_slice(),
-            continuation: continuation.into_boxed_slice(),
-            counters: vec![Move::NULL; PIECE_SQUARES].into_boxed_slice(),
+            main: vec![-5; 2 * MOVE_SLOTS].into_boxed_slice(),
+            low_ply: vec![102; LOW_PLY * MOVE_SLOTS].into_boxed_slice(),
+            capture: vec![-742; PIECE_SQUARES * 8].into_boxed_slice(),
+            continuation: vec![-586; CONTINUATION_TABLES * PIECE_SQUARES].into_boxed_slice(),
+            pawn: vec![-1338; PAWN_SLOTS * PIECE_SQUARES].into_boxed_slice(),
+            correction: vec![[[-5; 4]; 2]; CORRECTION_SLOTS].into_boxed_slice(),
+            continuation_correction: vec![5; (PIECE_SQUARES + 1) * PIECE_SQUARES]
+                .into_boxed_slice(),
+            tt_move: 0,
         }
     }
 
-    fn main_index(side: usize, mv: Move) -> usize {
-        side * 4096 + mv.from().index() * 64 + mv.to().index()
+    /// Tables of no size, standing in for statistics handed back to the table.
+    pub(super) fn empty() -> Self {
+        Self {
+            main: Box::default(),
+            low_ply: Box::default(),
+            capture: Box::default(),
+            continuation: Box::default(),
+            pawn: Box::default(),
+            correction: Box::default(),
+            continuation_correction: Box::default(),
+            tt_move: 0,
+        }
     }
 
-    /// `victim` is the captured kind's index plus one, or zero for a queen promotion
-    /// without capture.
-    fn capture_index(piece_square: usize, victim: usize) -> usize {
-        piece_square * 7 + victim
+    /// At the start of each search, as in Stockfish: the butterfly history shrinks toward
+    /// zero and the low-ply history starts over.
+    pub(super) fn start_search(&mut self) {
+        for entry in self.main.iter_mut() {
+            *entry = (i32::from(*entry) * 729 / 1024) as i16;
+        }
+        self.low_ply.fill(102);
+    }
+
+    fn move_index(side: usize, mv: Move) -> usize {
+        side * MOVE_SLOTS + usize::from(mv.raw())
     }
 
     pub(super) fn main(&self, side: usize, mv: Move) -> i32 {
-        i32::from(self.main[Self::main_index(side, mv)])
+        i32::from(self.main[Self::move_index(side, mv)])
     }
 
     pub(super) fn update_main(&mut self, side: usize, mv: Move, bonus: i32) {
         gravity(
-            &mut self.main[Self::main_index(side, mv)],
+            &mut self.main[Self::move_index(side, mv)],
             bonus,
             MAIN_LIMIT,
         );
     }
 
+    pub(super) fn low_ply(&self, ply: usize, mv: Move) -> i32 {
+        i32::from(self.low_ply[Self::move_index(ply, mv)])
+    }
+
+    pub(super) fn update_low_ply(&mut self, ply: usize, mv: Move, bonus: i32) {
+        gravity(
+            &mut self.low_ply[Self::move_index(ply, mv)],
+            bonus,
+            MAIN_LIMIT,
+        );
+    }
+
+    /// `victim` is the captured kind's index plus one, or zero for none.
     pub(super) fn capture(&self, piece_square: usize, victim: usize) -> i32 {
-        i32::from(self.capture[Self::capture_index(piece_square, victim)])
+        i32::from(self.capture[piece_square * 8 + victim])
     }
 
     pub(super) fn update_capture(&mut self, piece_square: usize, victim: usize, bonus: i32) {
         gravity(
-            &mut self.capture[Self::capture_index(piece_square, victim)],
+            &mut self.capture[piece_square * 8 + victim],
             bonus,
             CAPTURE_LIMIT,
         );
@@ -96,7 +149,6 @@ impl Histories {
     }
 
     pub(super) fn update_continuation(&mut self, table: usize, piece_square: usize, bonus: i32) {
-        debug_assert_ne!(table, SENTINEL);
         gravity(
             &mut self.continuation[table * PIECE_SQUARES + piece_square],
             bonus,
@@ -104,12 +156,64 @@ impl Histories {
         );
     }
 
-    pub(super) fn counter(&self, previous: usize) -> Move {
-        self.counters[previous]
+    fn pawn_index(pawn_key: u64, piece_square: usize) -> usize {
+        (pawn_key as usize & (PAWN_SLOTS - 1)) * PIECE_SQUARES + piece_square
     }
 
-    pub(super) fn set_counter(&mut self, previous: usize, mv: Move) {
-        self.counters[previous] = mv;
+    pub(super) fn pawn(&self, pawn_key: u64, piece_square: usize) -> i32 {
+        i32::from(self.pawn[Self::pawn_index(pawn_key, piece_square)])
+    }
+
+    pub(super) fn update_pawn(&mut self, pawn_key: u64, piece_square: usize, bonus: i32) {
+        gravity(
+            &mut self.pawn[Self::pawn_index(pawn_key, piece_square)],
+            bonus,
+            PAWN_LIMIT,
+        );
+    }
+
+    pub(super) fn correction(&self, kind: Correction, key: u64, side: usize) -> i32 {
+        i32::from(self.correction[key as usize & (CORRECTION_SLOTS - 1)][side][kind as usize])
+    }
+
+    pub(super) fn update_correction(
+        &mut self,
+        kind: Correction,
+        key: u64,
+        side: usize,
+        bonus: i32,
+    ) {
+        gravity(
+            &mut self.correction[key as usize & (CORRECTION_SLOTS - 1)][side][kind as usize],
+            bonus,
+            CORRECTION_LIMIT,
+        );
+    }
+
+    /// `row` is the piece and square of the earlier move, `NO_PIECE_SQUARE` for none.
+    pub(super) fn continuation_correction(&self, row: usize, piece_square: usize) -> i32 {
+        i32::from(self.continuation_correction[row * PIECE_SQUARES + piece_square])
+    }
+
+    pub(super) fn update_continuation_correction(
+        &mut self,
+        row: usize,
+        piece_square: usize,
+        bonus: i32,
+    ) {
+        gravity(
+            &mut self.continuation_correction[row * PIECE_SQUARES + piece_square],
+            bonus,
+            CORRECTION_LIMIT,
+        );
+    }
+
+    pub(super) fn tt_move(&self) -> i32 {
+        i32::from(self.tt_move)
+    }
+
+    pub(super) fn update_tt_move(&mut self, bonus: i32) {
+        gravity(&mut self.tt_move, bonus, TT_MOVE_LIMIT);
     }
 }
 

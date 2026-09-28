@@ -1,17 +1,17 @@
+//! Transposition table with Stockfish 19's replacement rules (GPL-3.0,
+//! https://github.com/official-stockfish/Stockfish), stored as two lockless words per
+//! entry: the data, and the key xor the data, so that a torn write fails the key check.
+
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use inphzugzwang_core::Move;
 
-use crate::Memory;
+use crate::{is_decisive, Memory, DEPTH_NONE};
 
 const ENTRIES_PER_CLUSTER: usize = 4;
 const CLUSTER_BYTES: usize = 64;
-/// Stored depths are offset so that the quiescence depths and `DEPTH_NONE` fit in seven
-/// unsigned bits, and a stored depth is never zero, which marks an empty entry.
-const DEPTH_OFFSET: i32 = -7;
-pub(super) const DEPTH_NONE: i32 = -6;
-const DEPTH_MAX: i32 = 127 + DEPTH_OFFSET;
+const GENERATION_MASK: u8 = 31;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Bound {
@@ -41,6 +41,44 @@ pub(super) struct Record {
     pub pv: bool,
 }
 
+// Data word: move 0-15, score 16-31, evaluation 32-47, depth less DEPTH_NONE 48-55
+// (zero marks an empty entry), bound 56-57, principal variation 58, generation 59-63.
+
+fn pack(record: &Record, generation: u8) -> u64 {
+    let depth = (record.depth - DEPTH_NONE).clamp(1, 255) as u64;
+    u64::from(record.mv.raw())
+        | (u64::from(record.score as i16 as u16) << 16)
+        | (u64::from(record.eval as i16 as u16) << 32)
+        | (depth << 48)
+        | ((record.bound as u64) << 56)
+        | (u64::from(record.pv) << 58)
+        | (u64::from(generation & GENERATION_MASK) << 59)
+}
+
+fn unpack(data: u64) -> Record {
+    Record {
+        mv: Move::from_raw(data as u16),
+        score: i32::from((data >> 16) as u16 as i16),
+        eval: i32::from((data >> 32) as u16 as i16),
+        depth: ((data >> 48) & 255) as i32 + DEPTH_NONE,
+        bound: match (data >> 56) & 3 {
+            0 => Bound::None,
+            1 => Bound::Upper,
+            2 => Bound::Lower,
+            _ => Bound::Exact,
+        },
+        pv: data & (1 << 58) != 0,
+    }
+}
+
+fn depth8(data: u64) -> i32 {
+    ((data >> 48) & 255) as i32
+}
+
+fn generation_of(data: u64) -> u8 {
+    (data >> 59) as u8 & GENERATION_MASK
+}
+
 struct Entry {
     key_xor_data: AtomicU64,
     data: AtomicU64,
@@ -56,11 +94,11 @@ impl Default for Entry {
 }
 
 impl Entry {
-    /// The entry's data if it holds `key`. Key and data are written as two words, so a
-    /// torn write from another thread fails the check instead of mixing positions.
+    /// The entry's data if it holds `key`.
     fn load(&self, key: u64) -> Option<u64> {
         let data = self.data.load(Ordering::Relaxed);
-        (data != 0 && self.key_xor_data.load(Ordering::Relaxed) ^ data == key).then_some(data)
+        (depth8(data) != 0 && self.key_xor_data.load(Ordering::Relaxed) ^ data == key)
+            .then_some(data)
     }
 
     fn write(&self, key: u64, data: u64) {
@@ -82,14 +120,33 @@ impl Default for Cluster {
     }
 }
 
+/// What time management carries from one search of a game to the next.
+#[derive(Clone, Copy)]
+pub(super) struct Previous {
+    /// Best score and its running average from the last search, if there was one.
+    pub score: Option<(i32, i32)>,
+    pub time_reduction: f64,
+    /// Stockfish's `originalTimeAdjust`, fixed on the first timed move of a game.
+    pub time_adjust: Option<f64>,
+}
+
+impl Default for Previous {
+    fn default() -> Self {
+        Self {
+            score: None,
+            time_reduction: 1.0,
+            time_adjust: None,
+        }
+    }
+}
+
 /// The shared transposition table, which also keeps each search thread's statistics
-/// between moves, so that both are cleared together.
+/// and the time-management state between moves, so that all are cleared together.
 pub struct TranspositionTable {
     clusters: Box<[Cluster]>,
-    age: AtomicU8,
+    generation: AtomicU8,
     memories: Mutex<Vec<Memory>>,
-    /// The last search's score and time reduction, which time management carries over.
-    previous: Mutex<(Option<i32>, f64)>,
+    previous: Mutex<Previous>,
 }
 
 impl TranspositionTable {
@@ -103,10 +160,38 @@ impl TranspositionTable {
         clusters.resize_with(count, Cluster::default);
         Some(Self {
             clusters: clusters.into_boxed_slice(),
-            age: AtomicU8::new(0),
+            generation: AtomicU8::new(0),
             memories: Mutex::new(Vec::new()),
-            previous: Mutex::new((None, 1.0)),
+            previous: Mutex::new(Previous::default()),
         })
+    }
+
+    /// Starts a new search generation, against which entries age.
+    pub fn next_generation(&self) {
+        let next = (self.generation() + 1) & GENERATION_MASK;
+        self.generation.store(next, Ordering::Relaxed);
+    }
+
+    fn generation(&self) -> u8 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    fn relative_age(&self, data: u64) -> i32 {
+        i32::from(self.generation().wrapping_sub(generation_of(data)) & GENERATION_MASK)
+    }
+
+    /// Permille of sampled entries written in the current generation.
+    pub fn hashfull(&self) -> u16 {
+        let sample = self.clusters.len().min(1000);
+        let occupied = self.clusters[..sample]
+            .iter()
+            .flat_map(|cluster| cluster.entries.iter())
+            .filter(|entry| {
+                let data = entry.data.load(Ordering::Relaxed);
+                depth8(data) != 0 && self.relative_age(data) == 0
+            })
+            .count();
+        (occupied * 1000 / (sample * ENTRIES_PER_CLUSTER)) as u16
     }
 
     /// Statistics kept from an earlier search, or new ones.
@@ -118,18 +203,6 @@ impl TranspositionTable {
             .unwrap_or_else(Memory::new)
     }
 
-    pub(super) fn previous_search(&self) -> (Option<i32>, f64) {
-        self.previous
-            .lock()
-            .map_or((None, 1.0), |previous| *previous)
-    }
-
-    pub(super) fn set_previous_search(&self, score: Option<i32>, time_reduction: f64) {
-        if let Ok(mut previous) = self.previous.lock() {
-            *previous = (score, time_reduction);
-        }
-    }
-
     /// Keeps a search thread's statistics for the next search.
     pub(super) fn keep_memory(&self, memory: Memory) {
         if let Ok(mut memories) = self.memories.lock() {
@@ -137,22 +210,16 @@ impl TranspositionTable {
         }
     }
 
-    pub fn next_generation(&self) {
-        self.age.fetch_add(1, Ordering::Relaxed);
+    pub(super) fn previous(&self) -> Previous {
+        self.previous
+            .lock()
+            .map_or_else(|_| Previous::default(), |previous| *previous)
     }
 
-    pub fn hashfull(&self) -> u16 {
-        let sample = self.clusters.len().min(1000);
-        let age = self.age() as u64;
-        let occupied = self.clusters[..sample]
-            .iter()
-            .flat_map(|cluster| cluster.entries.iter())
-            .filter(|entry| {
-                let data = entry.data.load(Ordering::Relaxed);
-                data != 0 && data >> 58 == age
-            })
-            .count();
-        (occupied * 1000 / (sample * ENTRIES_PER_CLUSTER)) as u16
+    pub(super) fn set_previous(&self, previous: Previous) {
+        if let Ok(mut stored) = self.previous.lock() {
+            *stored = previous;
+        }
     }
 
     pub(super) fn probe(&self, key: u64) -> Option<Record> {
@@ -163,14 +230,14 @@ impl TranspositionTable {
             .map(unpack)
     }
 
-    /// Stores a result the way Stockfish does: a result without a move keeps the move
-    /// already stored for the position, and a shallower non-exact result for the same
-    /// position does not replace a clearly deeper one. Otherwise the entry of the same
-    /// position, an empty one, or the one of least depth after ageing is replaced.
+    /// Stockfish's `TTEntry::save`: a result without a move keeps the stored move, and a
+    /// result replaces the stored one of the same position when it is exact, from a newer
+    /// search, or not clearly shallower. A kept, non-exact decisive entry of depth 5 or
+    /// more loses a ply instead, which helps elementary mates. Another position's result
+    /// replaces the entry of least depth after ageing.
     pub(super) fn store(&self, key: u64, record: Record) {
         let cluster = self.cluster(key);
-        let age = self.age();
-        let depth = record.depth.clamp(DEPTH_NONE, DEPTH_MAX);
+        let generation = self.generation();
         for entry in &cluster.entries {
             let Some(data) = entry.load(key) else {
                 continue;
@@ -182,77 +249,70 @@ impl TranspositionTable {
                 record.mv
             };
             let replace = record.bound == Bound::Exact
-                || depth + 2 * i32::from(record.pv) > previous.depth - 4;
-            let data = if replace {
-                pack(
-                    &Record {
-                        mv,
-                        depth,
-                        ..record
-                    },
-                    age,
-                )
-            } else if mv != previous.mv {
-                (data & !0xFFFF) | u64::from(mv.raw())
+                || record.depth - DEPTH_NONE + 2 * i32::from(record.pv) > depth8(data) - 4
+                || self.relative_age(data) != 0;
+            if replace {
+                entry.write(key, pack(&Record { mv, ..record }, generation));
             } else {
-                return;
-            };
-            entry.write(key, data);
+                let mut data = (data & !0xFFFF) | u64::from(mv.raw());
+                if depth8(data) + DEPTH_NONE >= 5
+                    && previous.bound != Bound::Exact
+                    && is_decisive(previous.score)
+                {
+                    data -= 1 << 48;
+                }
+                entry.write(key, data);
+            }
             return;
         }
         let mut replacement = &cluster.entries[0];
-        let mut lowest_quality = i32::MAX;
+        let mut lowest = i32::MAX;
         for entry in &cluster.entries {
             let data = entry.data.load(Ordering::Relaxed);
-            if data == 0 {
-                replacement = entry;
-                break;
-            }
-            let age_distance = i32::from(age.wrapping_sub((data >> 58) as u8) & 63);
-            let quality = ((data >> 48) & 127) as i32 - 8 * age_distance;
-            if quality < lowest_quality {
-                lowest_quality = quality;
+            let value = depth8(data) - 8 * self.relative_age(data);
+            if value < lowest {
+                lowest = value;
                 replacement = entry;
             }
         }
-        replacement.write(key, pack(&Record { depth, ..record }, age));
+        replacement.write(key, pack(&record, generation));
     }
 
-    fn age(&self) -> u8 {
-        self.age.load(Ordering::Relaxed) & 63
+    /// Lowers the stored depth of `key`'s entry, marking it less useful.
+    pub(super) fn penalize(&self, key: u64, plies: i32) {
+        for entry in &self.cluster(key).entries {
+            if let Some(data) = entry.load(key) {
+                let depth = (depth8(data) - plies).max(0) as u64;
+                entry.write(key, (data & !(255 << 48)) | (depth << 48));
+                return;
+            }
+        }
+    }
+
+    /// Fetches the cluster of `key` into the cache ahead of a probe.
+    pub(super) fn prefetch(&self, key: u64) {
+        let cluster = std::ptr::from_ref(self.cluster(key));
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: prefetching has no effect on memory and the pointer is valid.
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(cluster.cast::<i8>(), std::arch::x86_64::_MM_HINT_T0);
+        }
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: as above.
+        unsafe {
+            std::arch::asm!(
+                "prfm pldl1keep, [{0}]",
+                in(reg) cluster,
+                options(nostack, readonly, preserves_flags)
+            );
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let _ = cluster;
     }
 
     fn cluster(&self, key: u64) -> &Cluster {
-        let index = ((key as u128 * self.clusters.len() as u128) >> 64) as usize;
+        let index = ((u128::from(key) * self.clusters.len() as u128) >> 64) as usize;
         &self.clusters[index]
-    }
-}
-
-fn pack(record: &Record, age: u8) -> u64 {
-    let flags = (record.depth - DEPTH_OFFSET) as u64
-        | ((record.bound as u64) << 7)
-        | (u64::from(record.pv) << 9)
-        | (u64::from(age & 63) << 10);
-    u64::from(record.mv.raw())
-        | (u64::from(record.score as i16 as u16) << 16)
-        | (u64::from(record.eval as i16 as u16) << 32)
-        | (flags << 48)
-}
-
-fn unpack(data: u64) -> Record {
-    let flags = data >> 48;
-    Record {
-        mv: Move::from_raw(data as u16),
-        score: i32::from((data >> 16) as u16 as i16),
-        eval: i32::from((data >> 32) as u16 as i16),
-        depth: (flags & 127) as i32 + DEPTH_OFFSET,
-        bound: match (flags >> 7) & 3 {
-            0 => Bound::None,
-            1 => Bound::Upper,
-            2 => Bound::Lower,
-            _ => Bound::Exact,
-        },
-        pv: flags & (1 << 9) != 0,
     }
 }
 
@@ -260,10 +320,10 @@ fn unpack(data: u64) -> Record {
 mod tests {
     use super::*;
 
-    fn record(depth: i32, bound: Bound, mv: Move) -> Record {
+    fn record(depth: i32, bound: Bound, mv: Move, score: i32) -> Record {
         Record {
             mv,
-            score: -29_000,
+            score,
             eval: 31,
             depth,
             bound,
@@ -272,21 +332,20 @@ mod tests {
     }
 
     #[test]
-    fn records_round_trip_including_quiescence_depths() {
-        for depth in [DEPTH_NONE, -1, 0, 1, 60, DEPTH_MAX] {
+    fn records_round_trip() {
+        for depth in [DEPTH_NONE + 1, -1, 0, 1, 60, 245] {
             for bound in [Bound::None, Bound::Upper, Bound::Lower, Bound::Exact] {
                 let original = Record {
                     pv: depth % 2 == 0,
-                    ..record(depth, bound, Move::from_raw(0x1234))
+                    ..record(depth, bound, Move::from_raw(0x1234), -29_000)
                 };
-                let unpacked = unpack(pack(&original, 5));
-                assert_eq!(unpacked.depth, depth);
-                assert_eq!(unpacked.bound, bound);
-                assert_eq!(unpacked.pv, original.pv);
-                assert_eq!(unpacked.score, original.score);
-                assert_eq!(unpacked.eval, original.eval);
-                assert_eq!(unpacked.mv, original.mv);
-                assert_ne!(pack(&original, 5), 0);
+                let unpacked = unpack(pack(&original, 17));
+                assert_eq!(
+                    (unpacked.depth, unpacked.bound, unpacked.pv, unpacked.score),
+                    (depth, bound, original.pv, original.score)
+                );
+                assert_eq!((unpacked.eval, unpacked.mv), (original.eval, original.mv));
+                assert_eq!(generation_of(pack(&original, 17)), 17);
             }
         }
     }
@@ -296,15 +355,19 @@ mod tests {
         let table = TranspositionTable::new(1).unwrap();
         let key = 0x1234_5678;
         let mv = Move::from_raw(0x0421);
-        table.store(key, record(10, Bound::Lower, mv));
-        table.store(key, record(3, Bound::Upper, Move::NULL));
+        table.store(key, record(10, Bound::Lower, mv, 40));
+        table.store(key, record(3, Bound::Upper, Move::NULL, 12));
         let kept = table.probe(key).unwrap();
         assert_eq!((kept.depth, kept.bound, kept.mv), (10, Bound::Lower, mv));
-        table.store(key, record(3, Bound::Exact, Move::NULL));
+        table.store(key, record(3, Bound::Exact, Move::NULL, 12));
         let exact = table.probe(key).unwrap();
         assert_eq!((exact.depth, exact.bound, exact.mv), (3, Bound::Exact, mv));
+        table.penalize(key, 1);
+        assert_eq!(table.probe(key).unwrap().depth, 2);
         assert!(table.probe(key + 1).is_none());
         table.next_generation();
         assert_eq!(table.hashfull(), 0);
+        table.store(key, record(1, Bound::Upper, Move::NULL, 5));
+        assert_eq!(table.probe(key).unwrap().depth, 1, "a new search replaces");
     }
 }
