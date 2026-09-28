@@ -1,5 +1,5 @@
 use inphzugzwang_core::Position;
-use inphzugzwang_nnue::{delta, network, Accumulator, Network, RefreshCache};
+use inphzugzwang_nnue::{delta, network, Accumulator, Network, RefreshCache, Update};
 
 const REFERENCE: &str = include_str!("../../../tests/nnue/reference.txt");
 
@@ -61,6 +61,17 @@ fn walk(
         let mut child = Accumulator::default();
         network.apply(parent, &mut child, &delta, position, cache);
         let fresh = network.fresh(position);
+        let mut update = Update::none();
+        if network.prepare(&delta, position, &mut update) {
+            let mut deferred = Accumulator::default();
+            network.apply_update(parent, &mut deferred, &update);
+            assert!(
+                deferred.values == fresh.values && deferred.psqt == fresh.psqt,
+                "deferred {} after {}",
+                position.fen(),
+                position.format_move(mv, true)
+            );
+        }
         assert!(
             child.values == fresh.values && child.psqt == fresh.psqt,
             "{} after {}",

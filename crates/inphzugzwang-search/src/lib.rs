@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use inphzugzwang_core::{Move, Position};
-use inphzugzwang_nnue::{network, Accumulator, RefreshCache};
+use inphzugzwang_nnue::{network, Accumulator, RefreshCache, Update};
 use inphzugzwang_syzygy::{probeable, ProbeState, Tablebases, WDL_DRAW};
 
 mod history;
@@ -104,6 +104,10 @@ struct Search<'a> {
     pv: [[Move; MAX_PLY]; MAX_PLY],
     pv_len: [usize; MAX_PLY],
     accumulators: Box<[Accumulator]>,
+    /// Whether each ply's accumulator is current; if not, `updates` holds how it
+    /// follows from the previous ply's.
+    computed: [bool; MAX_PLY + 1],
+    updates: Box<[Update]>,
     refresh_cache: RefreshCache,
 }
 
@@ -632,6 +636,8 @@ impl<'a> Search<'a> {
             pv: [[Move::NULL; MAX_PLY]; MAX_PLY],
             pv_len: [0; MAX_PLY],
             accumulators,
+            computed: [true; MAX_PLY + 1],
+            updates: (0..=MAX_PLY).map(|_| Update::none()).collect(),
             refresh_cache: RefreshCache::new(),
         }
     }
@@ -679,14 +685,35 @@ impl<'a> Search<'a> {
         frame.continuation = continuation_table(in_check, capture, square);
         let delta = inphzugzwang_nnue::delta(&self.position, mv);
         self.position.make(mv);
-        let (parents, children) = self.accumulators.split_at_mut(ply + 1);
-        network().apply(
-            &parents[ply],
-            &mut children[0],
-            &delta,
-            &self.position,
-            &mut self.refresh_cache,
-        );
+        // The accumulator is only brought up to date when an evaluation needs it, which
+        // many nodes never do; moves that need a refresh are applied at once.
+        if network().prepare(&delta, &self.position, &mut self.updates[ply + 1]) {
+            self.computed[ply + 1] = false;
+        } else {
+            self.ensure_accumulator(ply);
+            let (parents, children) = self.accumulators.split_at_mut(ply + 1);
+            network().apply(
+                &parents[ply],
+                &mut children[0],
+                &delta,
+                &self.position,
+                &mut self.refresh_cache,
+            );
+            self.computed[ply + 1] = true;
+        }
+    }
+
+    /// Brings the accumulator of `ply` up to date from the nearest current one before it.
+    fn ensure_accumulator(&mut self, ply: usize) {
+        let mut start = ply;
+        while !self.computed[start] {
+            start -= 1;
+        }
+        for next in start + 1..=ply {
+            let (parents, children) = self.accumulators.split_at_mut(next);
+            network().apply_update(&parents[next - 1], &mut children[0], &self.updates[next]);
+            self.computed[next] = true;
+        }
     }
 
     fn make_null(&mut self, ply: usize) {
@@ -696,13 +723,21 @@ impl<'a> Search<'a> {
         frame.captured = false;
         frame.continuation = SENTINEL;
         self.position.make_null();
-        self.accumulators[ply + 1] = self.accumulators[ply].clone();
+        self.updates[ply + 1].clear();
+        self.computed[ply + 1] = false;
     }
 
     /// Static evaluation in centipawns for the side to move: Stockfish 19's evaluation
     /// without its optimism term, converted at 208 internal units per pawn, and kept
     /// below the tablebase range.
-    fn static_evaluation(&self, ply: usize) -> i32 {
+    /// The static evaluation with the correction history applied.
+    fn evaluate(&mut self, ply: usize) -> i32 {
+        let raw = self.static_evaluation(ply);
+        self.corrected(raw)
+    }
+
+    fn static_evaluation(&mut self, ply: usize) -> i32 {
+        self.ensure_accumulator(ply);
         let position = &self.position;
         let value = network()
             .evaluate(&self.accumulators[ply], position)
@@ -847,7 +882,7 @@ impl<'a> Search<'a> {
         self.root_delta = (beta - alpha).max(1);
         let in_check = self.position.checkers().0 != 0;
         if !in_check && self.at(0, 0).static_eval == VALUE_NONE {
-            self.at_mut(0, 0).static_eval = self.corrected(self.static_evaluation(0));
+            self.at_mut(0, 0).static_eval = self.evaluate(0);
         }
         {
             let frame = self.at_mut(0, 0);
@@ -1140,11 +1175,7 @@ impl<'a> Search<'a> {
             return self.value_draw();
         }
         if ply >= MAX_PLY - 1 {
-            return if in_check {
-                0
-            } else {
-                self.corrected(self.static_evaluation(ply))
-            };
+            return if in_check { 0 } else { self.evaluate(ply) };
         }
         // No line from here can mate faster than a mate at the next ply or be mated
         // sooner than now, so a window outside those bounds is already decided.
@@ -1790,11 +1821,7 @@ impl<'a> Search<'a> {
             return 0;
         }
         if ply >= MAX_PLY - 1 {
-            return if in_check {
-                0
-            } else {
-                self.corrected(self.static_evaluation(ply))
-            };
+            return if in_check { 0 } else { self.evaluate(ply) };
         }
         let tt_depth = if in_check || depth >= 0 { 0 } else { -1 };
         let key = self.position.key();

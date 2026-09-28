@@ -143,6 +143,11 @@ impl<const N: usize> List<N> {
         }
     }
 
+    fn clear(&mut self) {
+        self.len = 0;
+        self.overflowed = false;
+    }
+
     fn push(&mut self, item: u32) {
         if self.len == N {
             self.overflowed = true;
@@ -191,6 +196,40 @@ impl Delta {
         self.added[self.added_len] = (piece, square);
         self.added_len += 1;
         self.changed = self.changed | square.bit();
+    }
+}
+
+/// Feature changes of one move for both perspectives, prepared by `Network::prepare`.
+#[derive(Clone)]
+pub struct Update {
+    gone: [[u32; 2]; 2],
+    gone_len: usize,
+    new: [[u32; 2]; 2],
+    new_len: usize,
+    extra_gone: [List<{ 2 * TOUCHING }>; 2],
+    extra_new: [List<{ 2 * TOUCHING }>; 2],
+}
+
+impl Update {
+    /// Makes this an update that changes nothing, as for a null move.
+    pub fn clear(&mut self) {
+        self.gone_len = 0;
+        self.new_len = 0;
+        for list in self.extra_gone.iter_mut().chain(&mut self.extra_new) {
+            list.clear();
+        }
+    }
+
+    /// An update that changes nothing.
+    pub fn none() -> Self {
+        Self {
+            gone: [[0; 2]; 2],
+            gone_len: 0,
+            new: [[0; 2]; 2],
+            new_len: 0,
+            extra_gone: [List::new(), List::new()],
+            extra_new: [List::new(), List::new()],
+        }
     }
 }
 
@@ -804,7 +843,7 @@ impl Network {
             }
         }
         let parent = *values;
-        update(values, &parent, self, &[], &[], &[], features.as_slice());
+        update_values(values, &parent, self, &[], &[], &[], features.as_slice());
     }
 
     /// Recomputes one perspective's accumulator from the board.
@@ -919,7 +958,7 @@ impl Network {
                     }
                 }
             }
-            update(
+            update_values(
                 values,
                 &parent.values[side],
                 self,
@@ -927,6 +966,82 @@ impl Network {
                 new,
                 extra_gone.as_slice(),
                 extra_new.as_slice(),
+            );
+        }
+    }
+
+    /// The feature changes of the move `delta` describes, for both perspectives, so that
+    /// the accumulator can be updated later and only if an evaluation needs it. Returns
+    /// false, leaving `update` unspecified, when the move needs a refresh instead: a king move, or more changed
+    /// threats than an incremental update holds.
+    pub fn prepare(&self, delta: &Delta, after: &Position, update: &mut Update) -> bool {
+        if delta.king_moved.is_some() || delta.threats.overflowed || delta.pairs.overflowed {
+            return false;
+        }
+        let threats = touching_threats(after, delta.changed);
+        let pairs = touching_pairs(after, delta.changed);
+        if threats.overflowed || pairs.overflowed {
+            return false;
+        }
+        let (threats_gone, threats_new) = difference(delta.threats.as_slice(), threats.as_slice());
+        let (pairs_gone, pairs_new) = difference(delta.pairs.as_slice(), pairs.as_slice());
+        update.clear();
+        update.gone_len = delta.removed_len;
+        update.new_len = delta.added_len;
+        for perspective in [Color::White, Color::Black] {
+            let side = perspective.index();
+            let king = after.king(perspective);
+            for (slot, &(piece, square)) in delta.removed[..delta.removed_len].iter().enumerate() {
+                update.gone[side][slot] = feature(perspective, king, piece, square) as u32;
+            }
+            for (slot, &(piece, square)) in delta.added[..delta.added_len].iter().enumerate() {
+                update.new[side][slot] = feature(perspective, king, piece, square) as u32;
+            }
+            let indexer = Indexer::new(perspective, king);
+            indexer.features(
+                threats_gone.as_slice(),
+                pairs_gone.as_slice(),
+                &mut update.extra_gone[side],
+            );
+            indexer.features(
+                threats_new.as_slice(),
+                pairs_new.as_slice(),
+                &mut update.extra_new[side],
+            );
+        }
+        true
+    }
+
+    /// Derives a child's accumulator from its parent's by a prepared update.
+    pub fn apply_update(&self, parent: &Accumulator, child: &mut Accumulator, update: &Update) {
+        for side in 0..2 {
+            let gone = &update.gone[side][..update.gone_len];
+            let new = &update.new[side][..update.new_len];
+            let psqt = &mut child.psqt[side];
+            *psqt = parent.psqt[side];
+            for (rows, sign) in [(gone, -1), (new, 1)] {
+                for &feature in rows {
+                    for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
+                        *value += sign * weight;
+                    }
+                }
+            }
+            for (rows, sign) in [(&update.extra_gone[side], -1), (&update.extra_new[side], 1)] {
+                for &feature in rows.as_slice() {
+                    let weights = self.extra_psqt_row(feature as usize);
+                    for (value, &weight) in psqt.iter_mut().zip(weights) {
+                        *value += sign * weight;
+                    }
+                }
+            }
+            update_values(
+                &mut child.values[side],
+                &parent.values[side],
+                self,
+                gone,
+                new,
+                update.extra_gone[side].as_slice(),
+                update.extra_new[side].as_slice(),
             );
         }
     }
@@ -955,15 +1070,13 @@ impl Network {
         let mut input = [0_u8; HALF];
         for (half, perspective) in [us, them].into_iter().enumerate() {
             let (low, high) = accumulator.values[perspective].split_at(HALF / 2);
-            for ((slot, &low), &high) in input[half * HALF / 2..(half + 1) * HALF / 2]
-                .iter_mut()
-                .zip(low)
-                .zip(high)
-            {
-                // Both factors are at most 255, so their product fits in 16 bits.
-                let (low, high) = (low.clamp(0, 255) as u16, high.clamp(0, 255) as u16);
-                *slot = ((low * high) >> 9) as u8;
-            }
+            pairwise(
+                low.try_into().expect("half width"),
+                high.try_into().expect("half width"),
+                (&mut input[half * HALF / 2..(half + 1) * HALF / 2])
+                    .try_into()
+                    .expect("half width"),
+            );
         }
         let stack = &self.stacks[bucket];
         let fc0 = first_layer(&input, &stack.fc0_weights);
@@ -1013,7 +1126,7 @@ fn activate(values: &[i32], out: &mut [u8], shift: u32) {
 /// so the running sums stay in registers. On x86-64 the same loop is compiled a second
 /// time for AVX2 and chosen at run time, since the release builds target the baseline
 /// instruction set.
-fn update(
+fn update_values(
     values: &mut [i16; HALF],
     parent: &[i16; HALF],
     network: &Network,
@@ -1096,15 +1209,45 @@ fn update_plain(values: &mut [i16; HALF], parent: &[i16; HALF], rows: &Rows) {
     }
 }
 
+/// Clips both halves to 0 to 255 and writes their products scaled down by 512, which
+/// stay below 128.
+fn pairwise(low: &[i16; HALF / 2], high: &[i16; HALF / 2], out: &mut [u8; HALF / 2]) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: Neon is part of the aarch64 baseline.
+        unsafe { simd::pairwise_neon(low, high, out) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for ((slot, &low), &high) in out.iter_mut().zip(low).zip(high) {
+            // Both factors are at most 255, so their product fits in 16 bits.
+            let (low, high) = (low.clamp(0, 255) as u16, high.clamp(0, 255) as u16);
+            *slot = ((low * high) >> 9) as u8;
+        }
+    }
+}
+
+/// Room for the groups of four inputs that are not all zero, with slack for the four
+/// indices the vector version writes at once.
+const GROUP_SLOTS: usize = HALF / 4 + 4;
+
 /// Groups of four inputs that are not all zero, listed without branching since about half
 /// of them are zero and a branch on each would mostly mispredict.
-fn nonzero_groups(input: &[u8; HALF], groups: &mut [u16; HALF / 4]) -> usize {
-    let mut count = 0;
-    for (group, chunk) in input.as_chunks::<4>().0.iter().enumerate() {
-        groups[count] = group as u16;
-        count += usize::from(u32::from_ne_bytes(*chunk) != 0);
+fn nonzero_groups(input: &[u8; HALF], groups: &mut [u16; GROUP_SLOTS]) -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: Neon is part of the aarch64 baseline.
+        unsafe { simd::nonzero_groups_neon(input, groups) }
     }
-    count
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut count = 0;
+        for (group, chunk) in input.as_chunks::<4>().0.iter().enumerate() {
+            groups[count] = group as u16;
+            count += usize::from(u32::from_ne_bytes(*chunk) != 0);
+        }
+        count
+    }
 }
 
 /// The first layer's sums for inputs of 0 to 127, visiting only the groups of four
@@ -1129,7 +1272,7 @@ fn first_layer(input: &[u8; HALF], weights: &[i8]) -> [i32; FC0_OUTPUTS] {
 
 fn first_layer_scalar(input: &[u8; HALF], weights: &[i8]) -> [i32; FC0_OUTPUTS] {
     let mut out = [0; FC0_OUTPUTS];
-    let mut groups = [0; HALF / 4];
+    let mut groups = [0; GROUP_SLOTS];
     let count = nonzero_groups(input, &mut groups);
     for &group in &groups[..count] {
         let group = usize::from(group);
@@ -1188,14 +1331,79 @@ fn products_scalar<const ROWS: usize>(input: &[u8], weights: &[i8]) -> [i32; ROW
 }
 
 mod simd {
-    use super::{Rows, FC0_OUTPUTS, HALF};
+    use super::{Rows, FC0_OUTPUTS, GROUP_SLOTS, HALF};
+
+    #[cfg(target_arch = "aarch64")]
+    pub unsafe fn pairwise_neon(
+        low: &[i16; HALF / 2],
+        high: &[i16; HALF / 2],
+        out: &mut [u8; HALF / 2],
+    ) {
+        use std::arch::aarch64::*;
+        let zero = vdupq_n_s16(0);
+        let ceiling = vdupq_n_s16(255);
+        let clip =
+            |values: int16x8_t| vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(values, zero), ceiling));
+        for start in (0..HALF / 2).step_by(16) {
+            let mut bytes = [vdup_n_u8(0); 2];
+            for (index, half) in bytes.iter_mut().enumerate() {
+                let offset = start + index * 8;
+                let product = vmulq_u16(
+                    clip(vld1q_s16(low.as_ptr().add(offset))),
+                    clip(vld1q_s16(high.as_ptr().add(offset))),
+                );
+                *half = vmovn_u16(vshrq_n_u16::<9>(product));
+            }
+            vst1q_u8(out.as_mut_ptr().add(start), vcombine_u8(bytes[0], bytes[1]));
+        }
+    }
+
+    /// Four groups at a time: a mask of the nonzero ones selects their offsets from a
+    /// table, all four slots are written and the count advances by the mask's weight.
+    #[cfg(target_arch = "aarch64")]
+    pub unsafe fn nonzero_groups_neon(
+        input: &[u8; HALF],
+        groups: &mut [u16; GROUP_SLOTS],
+    ) -> usize {
+        use std::arch::aarch64::*;
+        const OFFSETS: [[u16; 4]; 16] = {
+            let mut table = [[0; 4]; 16];
+            let mut mask = 0;
+            while mask < 16 {
+                let mut slot = 0;
+                let mut bit = 0;
+                while bit < 4 {
+                    if mask & (1 << bit) != 0 {
+                        table[mask][slot] = bit as u16;
+                        slot += 1;
+                    }
+                    bit += 1;
+                }
+                mask += 1;
+            }
+            table
+        };
+        let weights = vld1q_u32([1, 2, 4, 8].as_ptr());
+        let mut count = 0;
+        for base in (0..HALF / 4).step_by(4) {
+            let words = vld1q_u32(input.as_ptr().add(base * 4).cast());
+            let mask = vaddvq_u32(vandq_u32(vtstq_u32(words, words), weights)) as usize;
+            let offsets = vld1_u16(OFFSETS[mask].as_ptr());
+            vst1_u16(
+                groups.as_mut_ptr().add(count),
+                vadd_u16(offsets, vdup_n_u16(base as u16)),
+            );
+            count += mask.count_ones() as usize;
+        }
+        count
+    }
 
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "dotprod")]
     pub unsafe fn first_layer_neon(input: &[u8; HALF], weights: &[i8]) -> [i32; FC0_OUTPUTS] {
         use std::arch::aarch64::*;
         let mut sums = [vdupq_n_s32(0); FC0_OUTPUTS / 4];
-        let mut groups = [0; HALF / 4];
+        let mut groups = [0; GROUP_SLOTS];
         let count = super::nonzero_groups(input, &mut groups);
         let chunks = input.as_chunks::<4>().0;
         for &group in &groups[..count] {
@@ -1221,7 +1429,7 @@ mod simd {
         use std::arch::x86_64::*;
         let ones = _mm256_set1_epi16(1);
         let mut sums = [_mm256_setzero_si256(); FC0_OUTPUTS / 8];
-        let mut groups = [0; HALF / 4];
+        let mut groups = [0; GROUP_SLOTS];
         let count = super::nonzero_groups(input, &mut groups);
         let chunks = input.as_chunks::<4>().0;
         for &group in &groups[..count] {
