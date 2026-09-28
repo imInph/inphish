@@ -146,6 +146,7 @@ fn random_play_restores_full_state_and_hashes() {
         assert_eq!(position.key(), reloaded.key());
         assert_eq!(position.pawn_key(), reloaded.pawn_key());
         assert_eq!(position.non_pawn_keys(), reloaded.non_pawn_keys());
+        assert_eq!(position.minor_key(), reloaded.minor_key());
     }
     for snapshot in snapshots.into_iter().rev() {
         position.unmake();
@@ -261,13 +262,13 @@ fn static_exchange_follows_the_capture_sequence() {
         (
             "1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - 0 1",
             "e1e5",
-            126,
+            208,
             true,
         ),
         (
             "1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - 0 1",
             "e1e5",
-            127,
+            209,
             false,
         ),
         (
@@ -279,12 +280,12 @@ fn static_exchange_follows_the_capture_sequence() {
         (
             "1k1r3q/1ppn3p/p4b2/4p3/8/P2N2P1/1PP1R1BP/2K1Q3 w - - 0 1",
             "d3e5",
-            -655,
+            -573,
             true,
         ),
-        ("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 126, true),
+        ("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 208, true),
         ("4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 1, false),
-        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 126, true),
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 208, true),
         ("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", "e1g1", 0, true),
     ];
     for (fen, text, threshold, expected) in cases {
@@ -325,6 +326,90 @@ fn single_repetition_is_detected() {
     position.make(mv);
     assert!(position.is_repetition());
     assert!(!position.is_threefold());
+}
+
+#[test]
+fn repetition_distance_follows_stockfish() {
+    let mut position = Position::startpos();
+    let mut distances = Vec::new();
+    for text in [
+        "g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8",
+    ] {
+        let mv = find_move(&position, text);
+        position.make(mv);
+        distances.push((1..=12).find(|&ply| position.is_draw(ply)).unwrap_or(0));
+    }
+    // Each position recurs four plies later, which is a draw from ply 5 of a search;
+    // the start position's third occurrence is a draw at once.
+    assert_eq!(distances, [0, 0, 0, 5, 5, 5, 5, 1]);
+    position.make_null();
+    assert!(!position.is_draw(100));
+    position.unmake();
+    assert!(position.is_draw(1));
+    assert!(position.has_repeated());
+}
+
+/// A brute force of `upcoming_repetition`: some legal move leads to a position that
+/// counts as a repetition one ply deeper.
+fn upcoming_by_search(position: &mut Position, ply: usize) -> bool {
+    position.legal_moves().iter().any(|mv| {
+        position.make(mv);
+        let draw = position.is_draw(ply + 1);
+        position.unmake();
+        draw
+    })
+}
+
+#[test]
+fn upcoming_repetition_matches_a_search_of_all_moves() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut checked = 0;
+    for fen in [
+        START_FEN,
+        "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "4k3/2n5/8/8/8/8/5B2/4K3 w - - 0 1",
+    ] {
+        let mut position = Position::from_fen(fen).unwrap();
+        for _ in 0..120 {
+            // Mostly reversible moves, so that repetitions occur often.
+            let moves: Vec<_> = position.legal_moves().iter().collect();
+            if moves.is_empty() {
+                break;
+            }
+            let quiet: Vec<_> = moves
+                .iter()
+                .copied()
+                .filter(|mv| {
+                    mv.flag() == 0 && position.piece_at(mv.from()).unwrap().kind != PieceType::Pawn
+                })
+                .collect();
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let pool = if quiet.is_empty() || seed.is_multiple_of(8) {
+                &moves
+            } else {
+                &quiet
+            };
+            let mv = pool[(seed >> 8) as usize % pool.len()];
+            position.make(mv);
+            if position.halfmove_clock() >= 99 {
+                // The fifty-move rule, not repetition, decides here.
+                continue;
+            }
+            for ply in [0, 1, 2, 3, 5, 8, 30] {
+                assert_eq!(
+                    position.upcoming_repetition(ply),
+                    upcoming_by_search(&mut position, ply),
+                    "{} at ply {ply}",
+                    position.fen()
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000);
 }
 
 #[test]

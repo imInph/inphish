@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::OnceLock;
 
 use crate::attacks::{between, line};
 use crate::{bishop_attacks, king_attacks, knight_attacks, pawn_attacks, rook_attacks};
@@ -28,9 +29,16 @@ struct State {
     key: u64,
     pawn_key: u64,
     non_pawn_keys: [u64; 2],
+    minor_key: u64,
     checkers: Bitboard,
     pinned: Bitboard,
     reversible_start: usize,
+    plies_from_null: u16,
+    /// Plies back to an earlier occurrence of this position within reach of the fifty-move
+    /// counter, negative when that occurrence was itself a repetition, zero for none.
+    repetition: i16,
+    /// The piece the move into this position captured.
+    captured: Option<Piece>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -90,9 +98,13 @@ impl Position {
             key: 0,
             pawn_key: 0,
             non_pawn_keys: [0; 2],
+            minor_key: 0,
             checkers: Bitboard::EMPTY,
             pinned: Bitboard::EMPTY,
             reversible_start: 0,
+            plies_from_null: 0,
+            repetition: 0,
+            captured: None,
         };
         if state.fullmove == 0 {
             return Err(FenError("fullmove number must be positive"));
@@ -303,8 +315,23 @@ impl Position {
         self.state.pawn_key
     }
 
+    /// Keys of each side's pieces other than pawns, kings included, as in Stockfish.
     pub fn non_pawn_keys(&self) -> [u64; 2] {
         self.state.non_pawn_keys
+    }
+
+    /// Key of both sides' knights and bishops.
+    pub fn minor_key(&self) -> u64 {
+        self.state.minor_key
+    }
+
+    /// The piece the last move captured.
+    pub fn captured_piece(&self) -> Option<Piece> {
+        self.state.captured
+    }
+
+    pub fn plies_from_null(&self) -> u32 {
+        u32::from(self.state.plies_from_null)
     }
 
     pub fn checkers(&self) -> Bitboard {
@@ -853,6 +880,8 @@ impl Position {
             "position history exhausted"
         );
         self.history.push(self.state);
+        self.state.captured = None;
+        self.state.plies_from_null = self.state.plies_from_null.saturating_add(1);
         let side = self.state.side;
         let from = mv.from();
         let to = mv.to();
@@ -890,6 +919,7 @@ impl Position {
             if captured.is_some() {
                 self.state.halfmove = 0;
             }
+            self.state.captured = captured;
             let placed = Piece {
                 color: side,
                 kind: mv.promotion().unwrap_or(piece.kind),
@@ -924,26 +954,42 @@ impl Position {
         }
         self.refresh_checks();
         self.update_keys_from_move(mv, piece, old_rights, old_ep);
-        debug_assert_eq!(
-            self.keys_from_scratch(),
-            (
-                self.state.key,
-                self.state.pawn_key,
-                self.state.non_pawn_keys
-            )
-        );
+        self.state.repetition = self.find_repetition();
+        debug_assert_eq!(self.keys_from_scratch(), self.current_keys());
+    }
+
+    fn current_keys(&self) -> (u64, u64, [u64; 2], u64) {
+        (
+            self.state.key,
+            self.state.pawn_key,
+            self.state.non_pawn_keys,
+            self.state.minor_key,
+        )
+    }
+
+    /// Stockfish's repetition distance: the nearest earlier equal position at an even
+    /// distance of four or more plies, within the fifty-move counter and since the last
+    /// null move.
+    fn find_repetition(&self) -> i16 {
+        let end = usize::from(self.state.halfmove.min(self.state.plies_from_null));
+        let count = self.history.len();
+        for distance in (4..=end.min(count)).step_by(2) {
+            let earlier = &self.history[count - distance];
+            if earlier.key == self.state.key {
+                let distance = distance as i16;
+                return if earlier.repetition != 0 {
+                    -distance
+                } else {
+                    distance
+                };
+            }
+        }
+        0
     }
 
     pub fn unmake(&mut self) {
         self.state = self.history.pop().expect("unmake requires a prior move");
-        debug_assert_eq!(
-            self.keys_from_scratch(),
-            (
-                self.state.key,
-                self.state.pawn_key,
-                self.state.non_pawn_keys
-            )
-        );
+        debug_assert_eq!(self.keys_from_scratch(), self.current_keys());
     }
 
     pub fn is_threefold(&self) -> bool {
@@ -1028,6 +1074,62 @@ impl Position {
             .any(|state| state.key == self.state.key)
     }
 
+    /// Stockfish's draw test for a node `ply` plies below the root: the fifty-move rule
+    /// unless the last move mated, or a repetition, where one occurrence after the root
+    /// suffices and one before it needs a third.
+    pub fn is_draw(&self, ply: usize) -> bool {
+        if self.state.halfmove > 99
+            && (self.state.checkers.0 == 0 || !self.legal_moves().is_empty())
+        {
+            return true;
+        }
+        self.state.repetition != 0 && i32::from(self.state.repetition) < ply as i32
+    }
+
+    /// Whether a position has repeated since the last capture, pawn move or null move.
+    pub fn has_repeated(&self) -> bool {
+        let end = usize::from(self.state.halfmove.min(self.state.plies_from_null));
+        if self.state.repetition != 0 {
+            return true;
+        }
+        let count = self.history.len();
+        (1..=end.saturating_sub(4).min(count))
+            .any(|distance| self.history[count - distance].repetition != 0)
+    }
+
+    /// Whether the side to move has a move reaching a position that would then count as
+    /// a draw by repetition, found with Marcel van Kervinck's cuckoo tables as in
+    /// Stockfish: a reversible move of one piece is identified by its key difference.
+    pub fn upcoming_repetition(&self, ply: usize) -> bool {
+        let end = usize::from(self.state.halfmove.min(self.state.plies_from_null));
+        let count = self.history.len();
+        if end < 3 || count < end {
+            return false;
+        }
+        let side = hash_word(0x1000);
+        let original = self.state.key;
+        let mut other = original ^ self.history[count - 1].key ^ side;
+        let cuckoo = cuckoo();
+        let occupied = self.occupied();
+        for distance in (3..=end).step_by(2) {
+            other ^=
+                self.history[count - distance + 1].key ^ self.history[count - distance].key ^ side;
+            if other != 0 {
+                continue;
+            }
+            let earlier = &self.history[count - distance];
+            let move_key = original ^ earlier.key;
+            if let Some((from, to)) = cuckoo.find(move_key) {
+                if (between(from, to) & occupied).0 == 0
+                    && (ply > distance || earlier.repetition != 0)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn make_null(&mut self) {
         debug_assert_eq!(self.state.checkers.0, 0);
         assert!(
@@ -1045,16 +1147,19 @@ impl Position {
         // A null move breaks any repetition cycle; positions on either side of it must not match.
         self.state.reversible_start = self.history.len();
         self.state.key = key;
+        self.state.plies_from_null = 0;
+        self.state.repetition = 0;
+        self.state.captured = None;
         self.refresh_checks();
-        debug_assert_eq!(self.keys_from_scratch().0, self.state.key);
+        debug_assert_eq!(self.keys_from_scratch(), self.current_keys());
     }
 
     /// Static exchange evaluation: whether the capture sequence on the destination square
     /// nets at least `threshold` for the side to move, using the swap-list shortcut with
     /// x-ray attackers revealed as occupancy shrinks. Pins are ignored, as is usual.
     pub fn see_ge(&self, mv: Move, threshold: i32) -> bool {
-        // Stockfish's middlegame piece values, the scale its pruning thresholds assume.
-        const SEE_VALUES: [i32; 6] = [126, 781, 825, 1276, 2538, 20_000];
+        // Stockfish's piece values, the scale its pruning thresholds assume.
+        const SEE_VALUES: [i32; 6] = [208, 781, 825, 1276, 2538, 20_000];
         if mv.is_castle() {
             return threshold <= 0;
         }
@@ -1162,25 +1267,23 @@ impl Position {
     }
 
     fn refresh_keys(&mut self) {
-        let (key, pawn_key, non_pawn_keys) = self.keys_from_scratch();
+        let (key, pawn_key, non_pawn_keys, minor_key) = self.keys_from_scratch();
         self.state.key = key;
         self.state.pawn_key = pawn_key;
         self.state.non_pawn_keys = non_pawn_keys;
+        self.state.minor_key = minor_key;
     }
 
-    fn keys_from_scratch(&self) -> (u64, u64, [u64; 2]) {
+    fn keys_from_scratch(&self) -> (u64, u64, [u64; 2], u64) {
         let mut key = 0;
         let mut pawn = 0;
         let mut non_pawn = [0; 2];
+        let mut minor = 0;
         for index in 0..64 {
             if let Some(piece) = self.state.mailbox[index] {
                 let part = piece_hash(piece, Square(index as u8));
                 key ^= part;
-                if piece.kind == PieceType::Pawn {
-                    pawn ^= part;
-                } else if piece.kind != PieceType::King {
-                    non_pawn[piece.color.index()] ^= part;
-                }
+                add_to_keys(piece, part, &mut pawn, &mut non_pawn, &mut minor);
             }
         }
         if self.state.side == Color::Black {
@@ -1190,7 +1293,7 @@ impl Position {
         if let Some(ep) = self.hashable_ep() {
             key ^= hash_word(0x2000 + ep.file() as u64);
         }
-        (key, pawn, non_pawn)
+        (key, pawn, non_pawn, minor)
     }
 
     fn hashable_ep(&self) -> Option<Square> {
@@ -1234,14 +1337,11 @@ impl Position {
         }
         let mut pawn = previous.pawn_key;
         let mut non_pawn = previous.non_pawn_keys;
+        let mut minor = previous.minor_key;
         let mut toggle = |at: Square, moved: Piece| {
             let part = piece_hash(moved, at);
             key ^= part;
-            if moved.kind == PieceType::Pawn {
-                pawn ^= part;
-            } else if moved.kind != PieceType::King {
-                non_pawn[moved.color.index()] ^= part;
-            }
+            add_to_keys(moved, part, &mut pawn, &mut non_pawn, &mut minor);
         };
         toggle(mv.from(), piece);
         if mv.is_castle() {
@@ -1272,7 +1372,99 @@ impl Position {
         self.state.key = key;
         self.state.pawn_key = pawn;
         self.state.non_pawn_keys = non_pawn;
+        self.state.minor_key = minor;
     }
+}
+
+/// Adds or removes a piece's hash in the structure keys: pawns in the pawn key, every
+/// other piece in its side's non-pawn key, knights and bishops also in the minor key.
+fn add_to_keys(piece: Piece, part: u64, pawn: &mut u64, non_pawn: &mut [u64; 2], minor: &mut u64) {
+    if piece.kind == PieceType::Pawn {
+        *pawn ^= part;
+    } else {
+        non_pawn[piece.color.index()] ^= part;
+        if matches!(piece.kind, PieceType::Knight | PieceType::Bishop) {
+            *minor ^= part;
+        }
+    }
+}
+
+/// The key differences of every reversible move of one piece between two squares, with
+/// the side to move toggled, in two hash tables with cuckoo displacement.
+struct Cuckoo {
+    keys: Box<[u64; 8192]>,
+    moves: Box<[(Square, Square); 8192]>,
+}
+
+impl Cuckoo {
+    fn first(key: u64) -> usize {
+        (key & 0x1fff) as usize
+    }
+
+    fn second(key: u64) -> usize {
+        ((key >> 16) & 0x1fff) as usize
+    }
+
+    fn find(&self, key: u64) -> Option<(Square, Square)> {
+        [Self::first(key), Self::second(key)]
+            .into_iter()
+            .find(|&slot| self.keys[slot] == key)
+            .map(|slot| self.moves[slot])
+    }
+}
+
+fn cuckoo() -> &'static Cuckoo {
+    static TABLES: OnceLock<Cuckoo> = OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut keys = Box::new([0_u64; 8192]);
+        let mut moves = Box::new([(Square(0), Square(0)); 8192]);
+        for color in [Color::White, Color::Black] {
+            for kind in [
+                PieceType::Knight,
+                PieceType::Bishop,
+                PieceType::Rook,
+                PieceType::Queen,
+                PieceType::King,
+            ] {
+                let piece = Piece { color, kind };
+                for a in 0..64_u8 {
+                    for b in a + 1..64 {
+                        let (from, to) = (Square(a), Square(b));
+                        let attacks = match kind {
+                            PieceType::Knight => knight_attacks(from),
+                            PieceType::Bishop => bishop_attacks(from, Bitboard::EMPTY),
+                            PieceType::Rook => rook_attacks(from, Bitboard::EMPTY),
+                            PieceType::Queen => {
+                                bishop_attacks(from, Bitboard::EMPTY)
+                                    | rook_attacks(from, Bitboard::EMPTY)
+                            }
+                            _ => king_attacks(from),
+                        };
+                        if !attacks.contains(to) {
+                            continue;
+                        }
+                        let mut key =
+                            piece_hash(piece, from) ^ piece_hash(piece, to) ^ hash_word(0x1000);
+                        let mut entry = (from, to);
+                        let mut slot = Cuckoo::first(key);
+                        loop {
+                            std::mem::swap(&mut keys[slot], &mut key);
+                            std::mem::swap(&mut moves[slot], &mut entry);
+                            if key == 0 {
+                                break;
+                            }
+                            slot = if slot == Cuckoo::first(key) {
+                                Cuckoo::second(key)
+                            } else {
+                                Cuckoo::first(key)
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        Cuckoo { keys, moves }
+    })
 }
 
 fn place(state: &mut State, square: Square, piece: Piece) {
