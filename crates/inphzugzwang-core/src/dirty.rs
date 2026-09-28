@@ -3,7 +3,7 @@ use std::mem::MaybeUninit;
 use crate::{Bitboard, Color, Piece, PieceType, Square};
 
 /// Threat changes one move can record before the record counts as overflowed.
-const THREAT_CAPACITY: usize = 128;
+pub const THREAT_CAPACITY: usize = 128;
 
 /// What one move changed on the board, recorded while the move is made so that the
 /// network's accumulators can follow it without comparing positions: the pieces removed

@@ -33,9 +33,10 @@ const WEIGHT_SCALE_BITS: u32 = 6;
 const OUTPUT_SCALE: i32 = 16;
 /// Upper bound of simultaneously active threat or pawn-pair features, as in Stockfish.
 const MAX_EXTRA: usize = 256;
-/// Capacity for the threat and pawn-pair features one move changes for a perspective;
-/// a move changing more refreshes the accumulator instead.
-const CHANGES: usize = 160;
+/// Capacity for the threat and pawn-pair features one move changes for a perspective:
+/// the most threat changes a move records (a move recording more refreshes instead) and
+/// the pairs of the two pawns a move can take off the board or move, 17 each at most.
+const CHANGES: usize = inphzugzwang_core::THREAT_CAPACITY + 2 * 17;
 /// Capacity for the threats or pawn pairs around the squares one move changes, in the
 /// tests that compare positions before and after.
 #[cfg(test)]
