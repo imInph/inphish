@@ -25,3 +25,7 @@ Version 2.0 completed the parts of phase 6 that matter in a chess GUI. Version 3
 ## 5.0
 
 Version 5.0 moved to Stockfish 19's network, whose threat and pawn-pair inputs make each node about twice as expensive but scored 23 of 40 against 4.0.0 and placed inphish at about 3264 on the Stockfish 19 `UCI_Elo` ladder at 1+0.01, and added a bundled Polyglot opening book built from Lichess games, off by default. `UCI_Elo` was recalibrated for the new network. Of the original phases only pondering beyond the UCI plumbing remains unbuilt.
+
+## 6.0
+
+Version 6.0 replaced inphish's own search with a port of Stockfish 19's, including its move ordering, histories, correction histories, transposition-table rules, time management and thread voting, and followed Stockfish 19 in recording each move's threat changes and updating the network's accumulators only when a position is evaluated. It scored 37.5 of 40 against 5.0.0 and placed inphish at about 3588 on the Stockfish 19 `UCI_Elo` ladder at 1+0.01, where the scale is close to saturated, and 8 of 20 against Stockfish 19 at full strength. `UCI_Elo` was recalibrated for the stronger search. Pondering beyond the UCI plumbing remains unbuilt.

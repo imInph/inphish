@@ -24,15 +24,15 @@ cargo +nightly fuzz run fen -- -max_total_time=30
 
 The engine itself builds on stable Rust. The fuzz harness is an independent workspace and does not add a runtime dependency to the engine.
 
-The release test suite includes UCI subprocess smoke and edge-case tests (ponder and ponderhit, illegal moves in `position`, `go` before `position`, node and movetime limits, quit during an infinite search) and a depth-4 bench signature check. Run them separately with:
+The release test suite includes UCI subprocess smoke and edge-case tests (ponder and ponderhit, illegal moves in `position`, `go` before `position`, node and movetime limits, quit during an infinite search) and a bench signature check. Run them separately with:
 
 ```sh
 cargo test --release -p inphish --test uci
 cargo test --release -p inphish --test bench
-target/release/inphish bench 4
+target/release/inphish bench
 ```
 
-The depth-4 signature is `86020` nodes. It must match in debug and release builds and on supported platforms.
+The bench searches at depth 13 by default, and its signature is `2408299` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
@@ -231,6 +231,33 @@ Revision `18dbaeb` (bench 74474), one thread, Hash 16 MiB, 1+0.01, two concurren
 | Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 16 | 1 | 3 | 17.5 |
 
 All Morstilia games ended in checkmate. 15 of the MaiEngine games were MaiEngine time forfeits. The tagged revision `0ee502d` (bench 74474) then played the newer versions of both engines with their own opening books off (`option.BookEnabled=false` and `option.OwnBook=false`): 20 of 20 against Morstilia v7-pre (repository `511a656`, reporting Morstilia 7.0.0), all checkmates, and 20 of 20 against Mai V2 (repository `e5d71bc`, run through its `maiengine-uci` script), 9 of them Mai V2 time forfeits. inphish lost no game on time and made no illegal move. The ladder fit over the two rungs is 3264 ± 123 at 1+0.01, against 3149 ± 102 for 4.0.0 over three; 3190 is Stockfish's highest `UCI_Elo`, so the estimate leans on the top rung. The win, draw and loss model was refitted to 4,674 evaluations from 40 self-play games of `18dbaeb` on the random openings, 27 of them drawn; the earlier fits had been held at the edge of the search grid, which is now wider.
+
+## 6.0 changes and candidate checks
+
+The search was rebuilt as a port of Stockfish 19's in steps, each measured at 1+0.01, Hash 16 MiB, on the balanced book with colours swapped. A first rebuild on Stockfish 15.1's structure with lazily updated accumulators, kept histories and Stockfish's time management (`7d02157`) scored 30 of 40 against 5.0.0 (22 wins, 2 losses, 16 draws). Stockfish 19's correction histories on that base scored 35 of 80 against it and were dropped in favour of porting Stockfish 19's search as a whole (`386e345`), which scored 49.5 of 80 against `7d02157` (30 wins, 11 losses, 39 draws). Four of those games ended in a panic: after a node returned early on a coming repetition, a stale principal variation from another position was reported; lines are now cleared first (`ec05f62`) and the next 60 games against 5.0.0 scored 53.5 (49 wins, 2 losses, 9 draws) with no failure. A line-by-line comparison with Stockfish 19's source then found six small differences, fixed in `c75c4f5` (bench 2408299), which scored 80.5 of 160 against `833c2da` in two batches of 80.
+
+Changes meant only to make the search faster kept the bench signature at 2408299, so the search itself is unchanged; they were timed as the best of several alternating depth-13 bench runs against the preceding build. Lending move lists to the picker instead of building two per node gained about 1.6%; recording the threats a move changes as it is made and updating accumulators only when a position is evaluated, one perspective at a time, about 10%; finding the first layer's nonzero inputs with a bitmask cut the evaluation of a cached accumulator from about 333 to 280 ns; keeping each king's slider blockers about 1%. Counting on six standard positions at depth 13, Stockfish 19 did 0.94 accumulator updates per node with 4.6 changed threat and pair rows per step, and this build 1.06 with 5.6. After them `684707f` scored 20 of 40 against `833c2da` (7 wins, 7 losses, 26 draws) as a check for failures, and had none. With the reference `speed.py` method (one thread, Hash 64, ten seconds on the starting position and a middlegame position) on an Apple M2: `c96a2bc` 794,933 nodes per second, 5.0.0 740,684, Stockfish 19 built for the machine 1,063,635.
+
+Revision `c96a2bc` (bench 2408299, engine code identical to the tag), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colours swapped unless noted, opening book off.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| inphish 5.0.0 | 40 | 35 | 0 | 5 | 37.5 |
+| Stockfish 19, `UCI_Elo` 3000 | 20 | 18 | 0 | 2 | 19.0 |
+| Stockfish 19, `UCI_Elo` 3190 | 20 | 17 | 0 | 3 | 18.5 |
+| Stockfish 19, full strength | 20 | 2 | 6 | 12 | 8.0 |
+| Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 20 | 0 | 0 | 20.0 |
+| Morstilia 6.0.0 | 20 | 20 | 0 | 0 | 20.0 |
+| MaiEngine | 20 | 20 | 0 | 0 | 20.0 |
+| Morstilia v7-pre, book off | 20 | 20 | 0 | 0 | 20.0 |
+| Mai V2, book off | 20 | 20 | 0 | 0 | 20.0 |
+| Mai v3, network by path | 20 | 6 | 1 | 13 | 12.5 |
+
+All Morstilia games ended in checkmate; 15 of the MaiEngine games and 3 of the Mai V2 games were their time forfeits. Every other game ended normally. inphish lost no game on time and made no illegal move. The ladder fit over the two rungs is 3588, with a 95% range of 3397 to 3864, against 3264 for 5.0.0; both rungs are near the top of Stockfish's `UCI_Elo` scale, so the estimate is loose, and the full-strength result places 6.0.0 somewhat below Stockfish 19 at this control. 5.0.0 scored 1.5 of 20 against Mai v3 in the same setup (0 wins, 17 losses, 3 draws).
+
+Mai v3 was also played with its own `tools/match.py` and openings (`openings2.epd`), Hash 64 for both engines and two concurrent games: at 1+0.01, 40 games, 6.0.0 scored 24 (14 wins, 6 losses, 20 draws) and 5.0.0 6.5 (0 wins, 27 losses, 13 draws); at 10+0.1, 60 games, 6.0.0 scored 36 (12 wins, 0 losses, 48 draws) and 5.0.0 14.5 (0 wins, 31 losses, 29 draws). No time losses on either side.
+
+CALIBRATION_TESTING
 
 ## Optional SPRT
 
