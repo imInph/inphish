@@ -1410,20 +1410,12 @@ const GROUP_SLOTS: usize = HALF / 4 + 4;
 /// Groups of four inputs that are not all zero, listed without branching since about half
 /// of them are zero and a branch on each would mostly mispredict.
 fn nonzero_groups(input: &[u8; HALF], groups: &mut [u16; GROUP_SLOTS]) -> usize {
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: Neon is part of the aarch64 baseline.
-        unsafe { simd::nonzero_groups_neon(input, groups) }
+    let mut count = 0;
+    for (group, chunk) in input.as_chunks::<4>().0.iter().enumerate() {
+        groups[count] = group as u16;
+        count += usize::from(u32::from_ne_bytes(*chunk) != 0);
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let mut count = 0;
-        for (group, chunk) in input.as_chunks::<4>().0.iter().enumerate() {
-            groups[count] = group as u16;
-            count += usize::from(u32::from_ne_bytes(*chunk) != 0);
-        }
-        count
-    }
+    count
 }
 
 /// The first layer's sums for inputs of 0 to 127, visiting only the groups of four
@@ -1507,7 +1499,7 @@ fn products_scalar<const ROWS: usize>(input: &[u8], weights: &[i8]) -> [i32; ROW
 }
 
 mod simd {
-    use super::{Rows, FC0_OUTPUTS, GROUP_SLOTS, HALF};
+    use super::{Rows, FC0_OUTPUTS, HALF};
 
     #[cfg(target_arch = "aarch64")]
     pub unsafe fn pairwise_neon(
@@ -1534,44 +1526,33 @@ mod simd {
         }
     }
 
-    /// Four groups at a time: a mask of the nonzero ones selects their offsets from a
-    /// table, all four slots are written and the count advances by the mask's weight.
+    /// A bit for each group of four inputs that are not all zero, in order. Sixteen
+    /// groups at a time go into one mask with a single horizontal sum, and no step waits
+    /// on another, as in Stockfish's nonzero bitset.
     #[cfg(target_arch = "aarch64")]
-    pub unsafe fn nonzero_groups_neon(
-        input: &[u8; HALF],
-        groups: &mut [u16; GROUP_SLOTS],
-    ) -> usize {
+    pub unsafe fn nonzero_mask_neon(input: &[u8; HALF]) -> [u64; HALF / 256] {
         use std::arch::aarch64::*;
-        const OFFSETS: [[u16; 4]; 16] = {
-            let mut table = [[0; 4]; 16];
-            let mut mask = 0;
-            while mask < 16 {
-                let mut slot = 0;
-                let mut bit = 0;
-                while bit < 4 {
-                    if mask & (1 << bit) != 0 {
-                        table[mask][slot] = bit as u16;
-                        slot += 1;
-                    }
-                    bit += 1;
-                }
-                mask += 1;
-            }
-            table
-        };
-        let weights = vld1q_u32([1, 2, 4, 8].as_ptr());
-        let mut count = 0;
-        for base in (0..HALF / 4).step_by(4) {
-            let words = vld1q_u32(input.as_ptr().add(base * 4).cast());
-            let mask = vaddvq_u32(vandq_u32(vtstq_u32(words, words), weights)) as usize;
-            let offsets = vld1_u16(OFFSETS[mask].as_ptr());
-            vst1_u16(
-                groups.as_mut_ptr().add(count),
-                vadd_u16(offsets, vdup_n_u16(base as u16)),
-            );
-            count += mask.count_ones() as usize;
+        let weights = [
+            vld1q_u32([1, 2, 4, 8].as_ptr()),
+            vld1q_u32([16, 32, 64, 128].as_ptr()),
+            vld1q_u32([256, 512, 1024, 2048].as_ptr()),
+            vld1q_u32([4096, 8192, 16_384, 32_768].as_ptr()),
+        ];
+        let mut masks = [0_u16; HALF / 64];
+        for (step, mask) in masks.iter_mut().enumerate() {
+            let words = input.as_ptr().add(step * 64).cast::<u32>();
+            let bits: [uint32x4_t; 4] = std::array::from_fn(|index| {
+                let lanes = vld1q_u32(words.add(index * 4));
+                vandq_u32(vtstq_u32(lanes, lanes), weights[index])
+            });
+            let bits = vorrq_u32(vorrq_u32(bits[0], bits[1]), vorrq_u32(bits[2], bits[3]));
+            *mask = vaddvq_u32(bits) as u16;
         }
-        count
+        std::array::from_fn(|index| {
+            (0..4).fold(0, |word, part| {
+                word | (u64::from(masks[index * 4 + part]) << (16 * part))
+            })
+        })
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -1579,17 +1560,19 @@ mod simd {
     pub unsafe fn first_layer_neon(input: &[u8; HALF], weights: &[i8]) -> [i32; FC0_OUTPUTS] {
         use std::arch::aarch64::*;
         let mut sums = [vdupq_n_s32(0); FC0_OUTPUTS / 4];
-        let mut groups = [0; GROUP_SLOTS];
-        let count = super::nonzero_groups(input, &mut groups);
         let chunks = input.as_chunks::<4>().0;
-        for &group in &groups[..count] {
-            let group = usize::from(group);
-            let word = u32::from_ne_bytes(chunks[group]);
-            // Activations never exceed 127, so they are also valid signed bytes.
-            let input = vreinterpretq_s8_u32(vdupq_n_u32(word));
-            let rows = weights[group * 4 * FC0_OUTPUTS..].as_ptr();
-            for (index, sum) in sums.iter_mut().enumerate() {
-                *sum = vdotq_s32(*sum, input, vld1q_s8(rows.add(index * 16)));
+        for (index, &word) in nonzero_mask_neon(input).iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let group = index * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let word = u32::from_ne_bytes(chunks[group]);
+                // Activations never exceed 127, so they are also valid signed bytes.
+                let input = vreinterpretq_s8_u32(vdupq_n_u32(word));
+                let rows = weights[group * 4 * FC0_OUTPUTS..].as_ptr();
+                for (index, sum) in sums.iter_mut().enumerate() {
+                    *sum = vdotq_s32(*sum, input, vld1q_s8(rows.add(index * 16)));
+                }
             }
         }
         let mut out = [0; FC0_OUTPUTS];
