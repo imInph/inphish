@@ -238,7 +238,7 @@ The search was rebuilt as a port of Stockfish 19's in steps, each measured at 1+
 
 Changes meant only to make the search faster kept the bench signature at 2408299, so the search itself is unchanged; they were timed as the best of several alternating depth-13 bench runs against the preceding build. Lending move lists to the picker instead of building two per node gained about 1.6%; recording the threats a move changes as it is made and updating accumulators only when a position is evaluated, one perspective at a time, about 10%; finding the first layer's nonzero inputs with a bitmask cut the evaluation of a cached accumulator from about 333 to 280 ns; keeping each king's slider blockers about 1%. Counting on six standard positions at depth 13, Stockfish 19 did 0.94 accumulator updates per node with 4.6 changed threat and pair rows per step, and this build 1.06 with 5.6. After them `684707f` scored 20 of 40 against `833c2da` (7 wins, 7 losses, 26 draws) as a check for failures, and had none. With the reference `speed.py` method (one thread, Hash 64, ten seconds on the starting position and a middlegame position) on an Apple M2: `c96a2bc` 794,933 nodes per second, 5.0.0 740,684, Stockfish 19 built for the machine 1,063,635.
 
-Revision `c96a2bc` (bench 2408299, engine code identical to the tag), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colours swapped unless noted, opening book off.
+Revision `c96a2bc` (bench 2408299, the same play at full strength as the tag; later commits change only the `UCI_Elo` budgets, documents and version), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colours swapped unless noted, opening book off.
 
 | Opponent | Games | Wins | Losses | Draws | Score |
 |---|---|---|---|---|---|
@@ -257,7 +257,7 @@ All Morstilia games ended in checkmate; 15 of the MaiEngine games and 3 of the M
 
 Mai v3 was also played with its own `tools/match.py` and openings (`openings2.epd`), Hash 64 for both engines and two concurrent games: at 1+0.01, 40 games, 6.0.0 scored 24 (14 wins, 6 losses, 20 draws) and 5.0.0 6.5 (0 wins, 27 losses, 13 draws); at 10+0.1, 60 games, 6.0.0 scored 36 (12 wins, 0 losses, 48 draws) and 5.0.0 14.5 (0 wins, 31 losses, 29 draws). No time losses on either side.
 
-CALIBRATION_TESTING
+`UCI_Elo` was recalibrated against Stockfish 19 at the same setting, 20 games per point. The 5.0.0 budgets (base-2 logarithms of nodes 7.4, 8.4, 10.3, 11.0, 12.8 and 14.6 at 1320, 1600, 2200, 2600, 2800 and 3000) scored 14, 11.5, 11, 10, 12 and 14.5 of 20 on `c96a2bc`. The budgets were lowered to 6.7, 8.2, 10.15, 11.0, 12.45 and 13.7, which scored 11 of 20 at 1320, 8 at 2800 and 15 at 3000, and then to 12.6 at 2800 and 13.1 at 3000, which scored 12 and 13.5 of 20. At the top of the scale the result barely follows the node budget at this control, and 20 games per point leave about two points of noise either way.
 
 ## Optional SPRT
 
