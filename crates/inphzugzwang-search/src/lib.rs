@@ -112,6 +112,9 @@ pub struct Limits {
     pub threads: usize,
     /// Playing strength to imitate, as an Elo on the scale of `UCI_Elo`.
     pub strength: Option<u16>,
+    /// How much worse than even a draw counts for the side to move at the root, in
+    /// internal units; zero scores draws as even, as Stockfish does.
+    pub contempt: i32,
     pub tablebases: Option<Arc<Tablebases>>,
     pub immediate: bool,
     pub started: Option<Instant>,
@@ -346,6 +349,9 @@ struct Worker<'a> {
     root_delta: i32,
     nmp_min_ply: usize,
     optimism: [i32; 2],
+    /// The value of a draw for each side to move: less than even for the root side by
+    /// the contempt, more for the other.
+    draw: [i32; 2],
     last_iteration_pv: Vec<Move>,
     pv: Box<[[Move; MAX_PLY + 2]]>,
     pv_len: Box<[usize]>,
@@ -802,7 +808,10 @@ impl<'a> Worker<'a> {
             .map(RootMove::new)
             .collect();
         let timed = limits.soft.is_some() || limits.hard.is_some();
+        let mut draw = [limits.contempt; 2];
+        draw[position.side_to_move().index()] = -limits.contempt;
         Worker {
+            draw,
             timed_started: (!limits.ponder).then_some(started),
             optimum: limits
                 .soft
@@ -1010,7 +1019,12 @@ impl<'a> Worker<'a> {
     }
 
     fn value_draw(&self) -> i32 {
-        -1 + (self.nodes & 2) as i32
+        self.draw_score() - 1 + (self.nodes & 2) as i32
+    }
+
+    /// A draw for the side to move, with the contempt.
+    fn draw_score(&self) -> i32 {
+        self.draw[self.position.side_to_move().index()]
     }
 
     fn reduction(&self, improving: bool, depth: i32, move_count: i32, delta: i32) -> i32 {
@@ -1185,7 +1199,7 @@ impl<'a> Worker<'a> {
         } else if wdl > 1 {
             (tb_value, Bound::Lower)
         } else {
-            (2 * wdl, Bound::Exact)
+            (self.draw_score() + 2 * wdl, Bound::Exact)
         })
     }
 
@@ -2132,7 +2146,7 @@ impl<'a> Worker<'a> {
             } else if in_check {
                 mated_in(ply)
             } else {
-                0
+                self.draw_score()
             };
         } else if best_move != Move::NULL {
             self.update_all_stats(
@@ -2243,7 +2257,7 @@ impl<'a> Worker<'a> {
             return if ply >= MAX_PLY && !in_check {
                 self.evaluate()
             } else {
-                0
+                self.draw_score()
             };
         }
         let key = table_key(&self.position);

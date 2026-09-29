@@ -15,6 +15,9 @@ use inphzugzwang_syzygy::Tablebases;
 
 use crate::bench;
 
+/// Contempt in centipawns unless set otherwise.
+const CONTEMPT_DEFAULT: i32 = 0;
+
 enum Event {
     Input(String),
     Eof,
@@ -43,6 +46,9 @@ struct Engine {
     threads: usize,
     limit_strength: bool,
     elo: u16,
+    /// Centipawns by which a draw counts as worse than even for the engine.
+    contempt: i32,
+    analyse_mode: bool,
     show_wdl: bool,
     tablebases: Option<Arc<Tablebases>>,
     chess960: bool,
@@ -86,6 +92,8 @@ pub fn run() -> io::Result<()> {
         threads: 1,
         limit_strength: false,
         elo: STRENGTH_MAX,
+        contempt: CONTEMPT_DEFAULT,
+        analyse_mode: false,
         show_wdl: false,
         tablebases: None,
         chess960: false,
@@ -183,6 +191,13 @@ impl Engine {
                         "option name UCI_Elo type spin default {STRENGTH_MAX} min {STRENGTH_MIN} max {STRENGTH_MAX}"
                     ),
                 )?;
+                write_line(
+                    out,
+                    &format!(
+                        "option name Contempt type spin default {CONTEMPT_DEFAULT} min -100 max 100"
+                    ),
+                )?;
+                write_line(out, "option name UCI_AnalyseMode type check default false")?;
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "option name SyzygyPath type string default <empty>")?;
@@ -214,6 +229,11 @@ impl Engine {
                 limits.multipv = self.multipv;
                 limits.threads = self.threads;
                 limits.strength = self.limit_strength.then_some(self.elo);
+                // Contempt shapes play against an opponent; analysis and limited strength
+                // score draws as even.
+                if !self.analyse_mode && !self.limit_strength {
+                    limits.contempt = self.contempt * 208 / 100;
+                }
                 limits.tablebases = self.tablebases.clone();
                 if self.active.is_some() {
                     self.stop();
@@ -396,6 +416,14 @@ impl Engine {
         } else if name == "uci_elo" {
             if let Ok(elo) = value.parse::<u16>() {
                 self.elo = elo.clamp(STRENGTH_MIN, STRENGTH_MAX);
+            }
+        } else if name == "contempt" {
+            if let Ok(centipawns) = value.parse::<i32>() {
+                self.contempt = centipawns.clamp(-100, 100);
+            }
+        } else if name == "uci_analysemode" {
+            if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
+                self.analyse_mode = enabled;
             }
         } else if name == "uci_showwdl" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
