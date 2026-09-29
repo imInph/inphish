@@ -259,6 +259,28 @@ Mai v3 was also played with its own `tools/match.py` and openings (`openings2.ep
 
 `UCI_Elo` was recalibrated against Stockfish 19 at the same setting, 20 games per point. The 5.0.0 budgets (base-2 logarithms of nodes 7.4, 8.4, 10.3, 11.0, 12.8 and 14.6 at 1320, 1600, 2200, 2600, 2800 and 3000) scored 14, 11.5, 11, 10, 12 and 14.5 of 20 on `c96a2bc`. The budgets were lowered to 6.7, 8.2, 10.15, 11.0, 12.45 and 13.7, which scored 11 of 20 at 1320, 8 at 2800 and 15 at 3000, and then to 12.6 at 2800 and 13.1 at 3000, which scored 12 and 13.5 of 20. At the top of the scale the result barely follows the node budget at this control, and 20 games per point leave about two points of noise either way.
 
+## 6.1 changes and candidate checks
+
+Changes meant only to make the search faster kept the bench signature at 2408299, and were timed as for 6.0 and with `speed.py`. Prefetching the transposition-table cluster before a move is made, from a key predicted from the move as Stockfish's `prefetch_key` does, prefetching the new position's correction entries after it, precomputed piece hashes, keeping the en passant part of the key in the position so that a move no longer copies the previous state to find it, and applying a refresh-cache entry's differing pieces in one pass raised `speed.py` from 812,000 to 861,000 nodes per second (`34b4d5a`); profiling showed the table probe falling from about 5% of the time to 1%. Four more were measured and dropped: checking squares kept per position (no change), updating both perspectives in one step as Stockfish's `forward_update_incremental_both` does (0.3% on bench, slower with `speed.py`), branchless threat indexing on its own (no change, kept only as part of `34b4d5a`), and testing king moves for legality only when the picker reaches them, which changed the node count (bench 1970333) and was not faster.
+
+`Contempt` was tried at 0, 10, 20 and 35 centipawns against Mai v3 at 1+0.01, 120 games each on the first 60 openings of `random8-300.epd` with colours swapped: 79.5, 74.5, 79.5 and 79.0 points. None beat 0, which stays the default. Aiming for 25% more time per move, since inphish ended these games with a median 0.40 s of its base time left against Mai v3's 0.21 s, scored 74.5 of 120 on the same openings and was dropped.
+
+Revision `d735235` (bench 2408299, the play of 6.0.0), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colours swapped unless noted, opening book off.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| inphish 6.0.0 | 40 | 3 | 3 | 34 | 20.0 |
+| Stockfish 19, `UCI_Elo` 3190 | 20 | 20 | 0 | 0 | 20.0 |
+| Stockfish 19, full strength | 20 | 2 | 5 | 13 | 8.5 |
+| Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 20 | 0 | 0 | 20.0 |
+| Morstilia 6.0.0 | 20 | 20 | 0 | 0 | 20.0 |
+| MaiEngine | 20 | 20 | 0 | 0 | 20.0 |
+| Morstilia v7-pre, book off | 20 | 20 | 0 | 0 | 20.0 |
+| Mai V2, book off | 20 | 20 | 0 | 0 | 20.0 |
+| Mai v3, network by path, Hash 16 | 20 | 10 | 0 | 10 | 15.0 |
+
+With its default Hash of 64 MiB Mai v3 scored 6 of 20 (inphish 10 wins, 2 losses, 8 draws). 9 of the MaiEngine games and 3 of the Mai V2 games were their time forfeits; every other game ended normally. inphish lost no game on time and made no illegal move. 20 of 20 at 3190 leaves no finite ladder fit.
+
 ## Optional SPRT
 
 The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.
