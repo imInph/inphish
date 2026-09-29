@@ -175,10 +175,45 @@ impl<const N: usize> List<N> {
         self.len += 1;
     }
 
+    /// Adds `item` when it is below `limit`, without a branch. The caller keeps within
+    /// the capacity.
+    fn push_below(&mut self, item: u32, limit: u32) {
+        debug_assert!(self.len < N);
+        // SAFETY: the caller keeps the list within its capacity.
+        unsafe { self.items.get_unchecked_mut(self.len) }.write(item);
+        self.len += usize::from(item < limit);
+    }
+
     fn as_slice(&self) -> &[u32] {
         // SAFETY: the first `len` items were written by `push`.
         unsafe { std::slice::from_raw_parts(self.items.as_ptr().cast(), self.len) }
     }
+}
+
+/// Starts loading the threat or pawn-pair weight row of `feature`, if it has one.
+#[inline(always)]
+fn prefetch_row(weights: &[i8], feature: u32) {
+    let offset = feature as usize * HALF;
+    if offset >= weights.len() {
+        return;
+    }
+    let row = weights[offset..].as_ptr();
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: prefetching has no effect on memory and the pointer is valid.
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(row, std::arch::x86_64::_MM_HINT_T2);
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as above.
+    unsafe {
+        std::arch::asm!(
+            "prfm pldl3keep, [{0}]",
+            in(reg) row,
+            options(nostack, readonly, preserves_flags)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = row;
 }
 
 /// Stockfish's piece numbering: 1 to 6 for White's pawn to king, 9 to 14 for Black's.
@@ -315,15 +350,20 @@ impl Indexer {
 
     /// The threat's feature, or `None` when the network has no feature for it.
     fn threat(&self, threat: u32) -> Option<u32> {
+        let index = self.threat_index(threat);
+        (index < THREAT_INPUTS as u32).then_some(index)
+    }
+
+    /// The threat's feature, or `THREAT_INPUTS` or more when the network has none.
+    fn threat_index(&self, threat: u32) -> u32 {
         let from = ((threat >> 16) & 63) as usize ^ self.orientation;
         let to = ((threat >> 8) & 63) as usize ^ self.orientation;
         let swap = 8 * self.perspective;
         let attacker = ((threat >> 4) & 15) as usize ^ swap;
         let attacked = (threat & 15) as usize ^ swap;
-        let index = self.tables.base[attacker][attacked][usize::from(from < to)]
+        self.tables.base[attacker][attacked][usize::from(from < to)]
             + self.tables.offsets[attacker][from]
-            + u32::from(self.tables.below[attacker][from][to]);
-        (index < THREAT_INPUTS as u32).then_some(index)
+            + u32::from(self.tables.below[attacker][from][to])
     }
 
     fn pair(&self, pair: u32) -> u32 {
@@ -584,7 +624,7 @@ impl Changes {
 
     /// Becomes the changes `dirty` records, with the piece-square features when `psq` is
     /// set. Refilling one value spares clearing new lists for every update.
-    fn fill(&mut self, dirty: &Dirty, perspective: Color, king: Square, psq: bool) {
+    fn fill(&mut self, dirty: &Dirty, perspective: Color, king: Square, psq: bool, weights: &[i8]) {
         let changes = self;
         changes.removed_len = 0;
         changes.added_len = 0;
@@ -602,14 +642,17 @@ impl Changes {
             }
         }
         let indexer = Indexer::new(perspective, king);
-        for &threat in dirty.threats() {
-            if let Some(feature) = indexer.threat(threat) {
-                if threat & THREAT_ADDED == 0 {
-                    changes.extra_gone.push(feature);
-                } else {
-                    changes.extra_new.push(feature);
-                }
-            }
+        let threats = dirty.threats();
+        debug_assert!(threats.len() <= CHANGES);
+        for &threat in threats {
+            let feature = indexer.threat_index(threat);
+            prefetch_row(weights, feature);
+            let list = if threat & THREAT_ADDED == 0 {
+                &mut changes.extra_gone
+            } else {
+                &mut changes.extra_new
+            };
+            list.push_below(feature, THREAT_INPUTS as u32);
         }
         let [before, after] = dirty.pawns();
         let changed = (before[0] ^ after[0]) | (before[1] ^ after[1]);
@@ -801,7 +844,8 @@ impl AccumulatorStack {
             (&later[0], &mut earlier[to])
         };
         let record = if forward { &child.dirty } else { &parent.dirty };
-        self.changes.fill(record, perspective, king, true);
+        self.changes
+            .fill(record, perspective, king, true, &network.extra_weights);
         network.apply_changes(
             (
                 &parent.accumulator.values[side],
@@ -1034,6 +1078,50 @@ impl Network {
         self.add_extras(position, perspective, values, psqt);
     }
 
+    /// Brings a cache entry for `king` to the pieces of `position`, removing and adding
+    /// the pieces that differ in one pass over the sums.
+    fn sync_entry(
+        &self,
+        entry: &mut CacheEntry,
+        position: &Position,
+        perspective: Color,
+        king: Square,
+    ) {
+        let mut removed = List::<32>::new();
+        let mut added = List::<32>::new();
+        for color in [Color::White, Color::Black] {
+            for (index, kind) in PIECE_KINDS.into_iter().enumerate() {
+                let now = position.pieces(color, kind);
+                let before = entry.pieces[color.index()][index];
+                let piece = Piece { color, kind };
+                for square in before & !now {
+                    removed.push(feature(perspective, king, piece, square) as u32);
+                }
+                for square in now & !before {
+                    added.push(feature(perspective, king, piece, square) as u32);
+                }
+                entry.pieces[color.index()][index] = now;
+            }
+        }
+        for (rows, sign) in [(&removed, -1), (&added, 1)] {
+            for &feature in rows.as_slice() {
+                for (value, &weight) in entry.psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
+                    *value += sign * weight;
+                }
+            }
+        }
+        let parent = entry.values;
+        update_values(
+            &mut entry.values,
+            &parent,
+            self,
+            removed.as_slice(),
+            added.as_slice(),
+            &[],
+            &[],
+        );
+    }
+
     /// Refreshes one perspective through the cache entry for its king square.
     fn refresh_cached(
         &self,
@@ -1045,22 +1133,7 @@ impl Network {
     ) {
         let king = position.king(perspective);
         let entry = &mut cache.entries[perspective.index() * 64 + king.index()];
-        for color in [Color::White, Color::Black] {
-            for (index, kind) in PIECE_KINDS.into_iter().enumerate() {
-                let now = position.pieces(color, kind);
-                let before = entry.pieces[color.index()][index];
-                let piece = Piece { color, kind };
-                for square in before & !now {
-                    let feature = feature(perspective, king, piece, square);
-                    self.toggle(&mut entry.values, &mut entry.psqt, feature, -1);
-                }
-                for square in now & !before {
-                    let feature = feature(perspective, king, piece, square);
-                    self.toggle(&mut entry.values, &mut entry.psqt, feature, 1);
-                }
-                entry.pieces[color.index()][index] = now;
-            }
-        }
+        self.sync_entry(entry, position, perspective, king);
         *values = entry.values;
         *psqt = entry.psqt;
         self.add_extras(position, perspective, values, psqt);
@@ -1109,22 +1182,7 @@ impl Network {
         }
         // Bring the new square's entry to the current pieces.
         let new_entry = &mut cache.entries[side * 64 + new_king.index()];
-        for color in [Color::White, Color::Black] {
-            for (index, kind) in PIECE_KINDS.into_iter().enumerate() {
-                let now = after.pieces(color, kind);
-                let before = new_entry.pieces[color.index()][index];
-                let piece = Piece { color, kind };
-                for square in before & !now {
-                    let feature = feature(perspective, new_king, piece, square);
-                    self.toggle(&mut new_entry.values, &mut new_entry.psqt, feature, -1);
-                }
-                for square in now & !before {
-                    let feature = feature(perspective, new_king, piece, square);
-                    self.toggle(&mut new_entry.values, &mut new_entry.psqt, feature, 1);
-                }
-                new_entry.pieces[color.index()][index] = now;
-            }
-        }
+        self.sync_entry(new_entry, after, perspective, new_king);
         let (new_values, new_psqt) = (new_entry.values, new_entry.psqt);
         // What the old square's entry lacks of, or has beyond, the previous pieces.
         let old_entry = &cache.entries[side * 64 + old_king.index()];
@@ -1162,7 +1220,7 @@ impl Network {
                 }
             }
         }
-        changes.fill(dirty, perspective, new_king, false);
+        changes.fill(dirty, perspective, new_king, false, &self.extra_weights);
         if changes.overflowed() {
             return false;
         }

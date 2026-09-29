@@ -41,6 +41,8 @@ struct State {
     pawn_key: u64,
     non_pawn_keys: [u64; 2],
     minor_key: u64,
+    /// The en passant part of `key`, zero when no capture is possible.
+    ep_key: u64,
     checkers: Bitboard,
     /// Pieces of either colour standing alone between each king and an enemy slider
     /// aimed at it: the side's own are pinned, the opponent's can give discovered check.
@@ -112,6 +114,7 @@ impl Position {
             pawn_key: 0,
             non_pawn_keys: [0; 2],
             minor_key: 0,
+            ep_key: 0,
             checkers: Bitboard::EMPTY,
             blockers: [Bitboard::EMPTY; 2],
             reversible_start: 0,
@@ -322,6 +325,23 @@ impl Position {
 
     pub fn key(&self) -> u64 {
         self.state.key
+    }
+
+    /// Stockfish's `prefetch_key`: the key after a plain move of one piece, with the
+    /// fifty-move counter it leaves, for loading table entries ahead of the move. Castling,
+    /// en passant, promotions and changed rights are not modelled.
+    pub fn prefetch_key(&self, mv: Move) -> (u64, u16) {
+        let (from, to) = (mv.from(), mv.to());
+        let Some(piece) = self.piece_at(from) else {
+            return (self.state.key, self.state.halfmove);
+        };
+        let mut key = self.state.key ^ SIDE_KEY ^ piece_hash(piece, from) ^ piece_hash(piece, to);
+        let captured = self.piece_at(to);
+        if let Some(captured) = captured {
+            key ^= piece_hash(captured, to);
+        }
+        let reset = captured.is_some() || piece.kind == PieceType::Pawn;
+        (key, if reset { 0 } else { self.state.halfmove + 1 })
     }
 
     pub fn pawn_key(&self) -> u64 {
@@ -963,7 +983,6 @@ impl Position {
         let to = mv.to();
         let piece = self.piece_at(from).expect("legal move has an origin piece");
         let old_rights = self.state.castling;
-        let old_ep = self.state.ep;
         self.state.ep = None;
         self.state.halfmove = self.state.halfmove.saturating_add(1);
         if piece.kind == PieceType::Pawn {
@@ -1061,7 +1080,7 @@ impl Position {
             self.state.fullmove = self.state.fullmove.saturating_add(1);
         }
         self.refresh_checks();
-        self.update_keys_from_move(mv, piece, old_rights, old_ep);
+        self.update_keys_from_move(mv, piece, old_rights);
         self.state.repetition = self.find_repetition();
         debug_assert_eq!(self.keys_from_scratch(), self.current_keys());
     }
@@ -1340,7 +1359,7 @@ impl Position {
         if end < 3 || count < end {
             return false;
         }
-        let side = hash_word(0x1000);
+        let side = SIDE_KEY;
         let original = self.state.key;
         let mut other = original ^ self.history[count - 1].key ^ side;
         let cuckoo = cuckoo();
@@ -1370,10 +1389,7 @@ impl Position {
             self.history.len() < MAX_HISTORY,
             "position history exhausted"
         );
-        let mut key = self.state.key ^ hash_word(0x1000);
-        if let Some(ep) = self.hashable_ep() {
-            key ^= hash_word(0x2000 + ep.file() as u64);
-        }
+        let key = self.state.key ^ SIDE_KEY ^ self.state.ep_key;
         self.history.push(self.state);
         // As in Stockfish, a null move leaves the fifty-move counter alone.
         self.state.ep = None;
@@ -1381,6 +1397,7 @@ impl Position {
         // A null move breaks any repetition cycle; positions on either side of it must not match.
         self.state.reversible_start = self.history.len();
         self.state.key = key;
+        self.state.ep_key = 0;
         self.state.plies_from_null = 0;
         self.state.repetition = 0;
         self.state.captured = None;
@@ -1501,6 +1518,7 @@ impl Position {
     }
 
     fn refresh_keys(&mut self) {
+        self.state.ep_key = self.ep_hash();
         let (key, pawn_key, non_pawn_keys, minor_key) = self.keys_from_scratch();
         self.state.key = key;
         self.state.pawn_key = pawn_key;
@@ -1521,13 +1539,17 @@ impl Position {
             }
         }
         if self.state.side == Color::Black {
-            key ^= hash_word(0x1000);
+            key ^= SIDE_KEY;
         }
         key ^= castling_hash(self.state.castling);
-        if let Some(ep) = self.hashable_ep() {
-            key ^= hash_word(0x2000 + ep.file() as u64);
-        }
+        key ^= self.ep_hash();
         (key, pawn, non_pawn, minor)
+    }
+
+    /// The en passant part of the key: the file's hash when a capture is possible.
+    fn ep_hash(&self) -> u64 {
+        self.hashable_ep()
+            .map_or(0, |ep| hash_word(0x2000 + ep.file() as u64))
     }
 
     fn hashable_ep(&self) -> Option<Square> {
@@ -1545,30 +1567,19 @@ impl Position {
         None
     }
 
-    fn update_keys_from_move(
-        &mut self,
-        mv: Move,
-        piece: Piece,
-        old_rights: CastlingRights,
-        old_ep: Option<Square>,
-    ) {
+    fn update_keys_from_move(&mut self, mv: Move, piece: Piece, old_rights: CastlingRights) {
         let previous = self.history.last().expect("make saved previous state");
-        let mut key = previous.key
-            ^ hash_word(0x1000)
-            ^ castling_hash(old_rights)
-            ^ castling_hash(self.state.castling);
-        if old_ep.is_some() {
-            let prior = Self {
-                state: *previous,
-                history: Vec::new(),
-            };
-            if let Some(ep) = prior.hashable_ep() {
-                key ^= hash_word(0x2000 + ep.file() as u64);
-            }
+        let mut key = previous.key ^ SIDE_KEY ^ previous.ep_key;
+        if old_rights != self.state.castling {
+            key ^= castling_hash(old_rights) ^ castling_hash(self.state.castling);
         }
-        if let Some(ep) = self.hashable_ep() {
-            key ^= hash_word(0x2000 + ep.file() as u64);
-        }
+        let ep_key = if self.state.ep.is_some() {
+            self.ep_hash()
+        } else {
+            0
+        };
+        key ^= ep_key;
+        self.state.ep_key = ep_key;
         let mut pawn = previous.pawn_key;
         let mut non_pawn = previous.non_pawn_keys;
         let mut minor = previous.minor_key;
@@ -1677,8 +1688,7 @@ fn cuckoo() -> &'static Cuckoo {
                         if !attacks.contains(to) {
                             continue;
                         }
-                        let mut key =
-                            piece_hash(piece, from) ^ piece_hash(piece, to) ^ hash_word(0x1000);
+                        let mut key = piece_hash(piece, from) ^ piece_hash(piece, to) ^ SIDE_KEY;
                         let mut entry = (from, to);
                         let mut slot = Cuckoo::first(key);
                         loop {
@@ -1719,15 +1729,28 @@ fn king_square(state: &State, color: Color) -> Square {
     Square(kings.0.trailing_zeros() as u8)
 }
 
-fn hash_word(value: u64) -> u64 {
+const fn hash_word(value: u64) -> u64 {
     let mut value = value.wrapping_add(0x6a09_e667_f3bc_c909);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
 }
 
+const SIDE_KEY: u64 = hash_word(0x1000);
+
+/// Every piece's hash on every square, by colour, kind and square.
+static PIECE_KEYS: [u64; 2 * 6 * 64] = {
+    let mut keys = [0; 2 * 6 * 64];
+    let mut index = 0;
+    while index < keys.len() {
+        keys[index] = hash_word(index as u64);
+        index += 1;
+    }
+    keys
+};
+
 fn piece_hash(piece: Piece, square: Square) -> u64 {
-    hash_word((piece.color.index() * 6 * 64 + piece.kind.index() * 64 + square.0 as usize) as u64)
+    PIECE_KEYS[piece.color.index() * 6 * 64 + piece.kind.index() * 64 + square.0 as usize]
 }
 
 fn castling_hash(rights: CastlingRights) -> u64 {

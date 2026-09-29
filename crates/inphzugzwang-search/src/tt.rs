@@ -291,29 +291,34 @@ impl TranspositionTable {
 
     /// Fetches the cluster of `key` into the cache ahead of a probe.
     pub(super) fn prefetch(&self, key: u64) {
-        let cluster = std::ptr::from_ref(self.cluster(key));
-        #[cfg(target_arch = "x86_64")]
-        // SAFETY: prefetching has no effect on memory and the pointer is valid.
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(cluster.cast::<i8>(), std::arch::x86_64::_MM_HINT_T0);
-        }
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: as above.
-        unsafe {
-            std::arch::asm!(
-                "prfm pldl1keep, [{0}]",
-                in(reg) cluster,
-                options(nostack, readonly, preserves_flags)
-            );
-        }
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        let _ = cluster;
+        prefetch(std::ptr::from_ref(self.cluster(key)));
     }
 
     fn cluster(&self, key: u64) -> &Cluster {
         let index = ((u128::from(key) * self.clusters.len() as u128) >> 64) as usize;
         &self.clusters[index]
     }
+}
+
+/// Starts loading the cache line at `address` into the cache.
+#[inline(always)]
+pub(super) fn prefetch<T>(address: *const T) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: prefetching has no effect on memory, whatever the address.
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(address.cast::<i8>(), std::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as above.
+    unsafe {
+        std::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) address,
+            options(nostack, readonly, preserves_flags)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = address;
 }
 
 #[cfg(test)]

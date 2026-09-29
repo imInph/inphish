@@ -699,14 +699,18 @@ fn weakened_choice(lines: &[Info], elo: u16, seed: u64) -> usize {
 /// 14 on it changes every eight plies, as Stockfish's `adjust_key50` does, so that results
 /// do not carry over between the same position at very different distances from the rule.
 fn table_key(position: &Position) -> u64 {
-    let rule50 = u64::from(position.halfmove_clock());
+    adjusted_key(position.key(), position.halfmove_clock())
+}
+
+fn adjusted_key(key: u64, rule50: u16) -> u64 {
+    let rule50 = u64::from(rule50);
     if rule50 < 14 {
-        return position.key();
+        return key;
     }
     let bucket = ((rule50 - 14) / 8)
         .wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407);
-    position.key() ^ bucket
+    key ^ bucket
 }
 
 /// A mate or tablebase score is stored relative to the node rather than the root.
@@ -959,9 +963,26 @@ impl<'a> Worker<'a> {
                 self.stop();
             }
         }
+        // As in Stockfish, the entry is loaded while the move is made, from a key that
+        // is exact for all but the rare moves of more than one piece.
+        let (key, rule50) = self.position.prefetch_key(mv);
+        self.tt.prefetch(adjusted_key(key, rule50));
         let dirty = self.memory.accumulators.push();
         self.position.make_recorded(mv, dirty);
-        self.tt.prefetch(table_key(&self.position));
+        let [white, black] = self.position.non_pawn_keys();
+        self.memory.histories.prefetch_corrections(
+            [
+                self.position.pawn_key(),
+                self.position.minor_key(),
+                white,
+                black,
+            ],
+            [
+                self.at(ply, 1).correction_row,
+                self.at(ply, 3).correction_row,
+            ],
+            square,
+        );
     }
 
     fn undo_move(&mut self) {

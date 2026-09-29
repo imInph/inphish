@@ -3,6 +3,8 @@
 
 use inphzugzwang_core::{Move, Piece};
 
+use crate::tt::prefetch;
+
 const MAIN_LIMIT: i32 = 7183;
 const CAPTURE_LIMIT: i32 = 10_692;
 const CONTINUATION_LIMIT: i32 = 30_000;
@@ -188,6 +190,22 @@ impl Histories {
             bonus,
             CORRECTION_LIMIT,
         );
+    }
+
+    /// Starts loading the corrections a position with these keys reads, and the
+    /// continuation corrections of `piece_square` in `rows`.
+    pub(super) fn prefetch_corrections(
+        &self,
+        keys: [u64; 4],
+        rows: [usize; 2],
+        piece_square: usize,
+    ) {
+        for key in keys {
+            prefetch(&self.correction[key as usize & (CORRECTION_SLOTS - 1)]);
+        }
+        for row in rows {
+            prefetch(&self.continuation_correction[row * PIECE_SQUARES + piece_square]);
+        }
     }
 
     /// `row` is the piece and square of the earlier move, `NO_PIECE_SQUARE` for none.
