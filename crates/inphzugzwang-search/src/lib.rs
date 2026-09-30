@@ -2007,7 +2007,14 @@ impl<'a> Worker<'a> {
                 r += r * 276 / (256 * depth + 268);
             }
             if depth >= 2 && move_count > 1 {
-                let reduced = (new_depth - r / 1024).min(new_depth + 2).max(1) + i32::from(PV);
+                // A negative reduction extends by up to two plies, but not deep in the tree,
+                // where chains of such extensions could reach the maximum ply.
+                let extension_cap = if (ply as i32) < 2 * self.root_depth {
+                    2
+                } else {
+                    0
+                };
+                let reduced = (new_depth + (-r / 1024).min(extension_cap)).max(1) + i32::from(PV);
                 self.at_mut(ply, 0).reduction = new_depth - reduced;
                 value = -self.search::<false, false>(reduced, -(alpha + 1), -alpha, ply + 1, true);
                 self.at_mut(ply, 0).reduction = 0;
