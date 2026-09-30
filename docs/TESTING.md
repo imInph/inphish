@@ -281,6 +281,22 @@ Revision `d735235` (bench 2408299, the play of 6.0.0), one thread, Hash 16 MiB, 
 
 With its default Hash of 64 MiB Mai v3 scored 6 of 20 (inphish 10 wins, 2 losses, 8 draws). 9 of the MaiEngine games and 3 of the Mai V2 games were their time forfeits; every other game ended normally. inphish lost no game on time and made no illegal move. 20 of 20 at 3190 leaves no finite ladder fit.
 
+## 6.2 changes and candidate checks
+
+6.2 ports the search changes between Stockfish 19 and its development build `dev-20260930-49ea5ded`, leaving the network for later. In three commits the bench signature went from 2408299 to 2308506 (the late-move extension limit, `0d0649d`), 1518654 (the gains, `8d65d39`; the time change `66264f5` leaves it unchanged) and 1457280 (the simplifications, `efe905e`). A debug build searched four positions for 20 seconds each without an overflow or assertion. With 10 seconds against 30 on the opponent's clock, the first search from the same position used 199,000 nodes against 321,000 with equal clocks. Alternating 10-second runs at Hash 64 on two positions gave about 736,000 nodes per second against 728,000 for 6.1.0, which is within the noise of the fanless machine.
+
+Revision `efe905e` (bench 1457280, the play of the tag), one thread, Hash 16 MiB, 1+0.01, two concurrent games, balanced book with colours swapped unless noted, opening book off. The opponent set changed: Stockfish 19 at `UCI_Elo` 3190, which 6.1.0 beat 20 to 0, MaiEngine, Mai V2, Morstilia V6 and Morstilia v7-pre were dropped, and Morstilia is now its published 7.0.0 release (`v7`, macOS arm64 asset) with `BookEnabled=false`.
+
+| Opponent | Games | Wins | Losses | Draws | Score |
+|---|---|---|---|---|---|
+| inphish 6.1.0 | 40 | 9 | 8 | 23 | 20.5 |
+| Stockfish 19, full strength | 20 | 0 | 3 | 17 | 8.5 |
+| Stockfish 19, `UCI_Elo` 2800, Chess960 book | 20 | 19 | 1 | 0 | 19.0 |
+| Mai v3, network by path, Hash 16 | 20 | 8 | 1 | 11 | 13.5 |
+| Morstilia 7.0.0, book off | 20 | 20 | 0 | 0 | 20.0 |
+
+Every game ended by checkmate, repetition, the fifty-move rule, insufficient material or stalemate. inphish lost no game on time and made no illegal move. Against 6.1.0 the result is even, as expected for gains of a few Elo each in Stockfish's tests; the other scores are within two points of 6.1.0's.
+
 ## Optional SPRT
 
 The runner compares committed revisions with fastchess and a balanced EPD opening set. It builds both revisions in a temporary directory, plays each opening with colors swapped, and writes a PGN to the requested path. It leaves the working tree untouched.

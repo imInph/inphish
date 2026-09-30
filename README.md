@@ -59,29 +59,30 @@ No rating-list Elo has been measured. Each release is placed on Stockfish 19's `
 
 ![Elo per release on Stockfish 19's UCI_Elo scale at 1+0.01](docs/images/progress.jpg)
 
-The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search, 5.0.0, which moved to Stockfish 19's network with threat and pawn-pair inputs, and 6.0.0, which ported Stockfish 19's search. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even, 5.0.0 12.5 and 6.0.0 18.5 of 20 against Stockfish at its highest setting, 3190, so their figures rest on the top of the scale and are the least certain; 6.0.0's range runs from 3397 to 3864. Against Stockfish 19 at full strength 6.0.0 scored 8 of 20 (2 wins, 6 losses, 12 draws). 6.1.0 plays the same moves as 6.0.0, about 6% faster; it scored 20 of 20 at 3190, which puts it past the top of the scale, so it has no figure of its own, and 8.5 of 20 against Stockfish at full strength (2 wins, 5 losses, 13 draws). Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, 4.0.0 scored 32 of 40 against 3.1.2, 5.0.0 23 of 40 against 4.0.0, although it searches about half as many nodes per second, and 6.0.0 37.5 of 40 against 5.0.0. 6.1.0 scored 20 of 40 against 6.0.0, 34 of them draws, as expected for the same search a little faster.
+The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search, 5.0.0, which moved to Stockfish 19's network with threat and pawn-pair inputs, and 6.0.0, which ported Stockfish 19's search. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even, 5.0.0 12.5 and 6.0.0 18.5 of 20 against Stockfish at its highest setting, 3190, so their figures rest on the top of the scale and are the least certain; 6.0.0's range runs from 3397 to 3864. Against Stockfish 19 at full strength 6.0.0 scored 8 of 20 (2 wins, 6 losses, 12 draws). 6.1.0 plays the same moves as 6.0.0, about 6% faster; it scored 20 of 20 at 3190, which puts it past the top of the scale, so it has no figure of its own, and 8.5 of 20 against Stockfish at full strength (2 wins, 5 losses, 13 draws). Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, 4.0.0 scored 32 of 40 against 3.1.2, 5.0.0 23 of 40 against 4.0.0, although it searches about half as many nodes per second, and 6.0.0 37.5 of 40 against 5.0.0. 6.1.0 scored 20 of 40 against 6.0.0, 34 of them draws, as expected for the same search a little faster. 6.2.0 ports the search changes of Stockfish's development build after Stockfish 19; it scored 20.5 of 40 against 6.1.0 and 8.5 of 20 against Stockfish 19 at full strength (no wins, 3 losses, 17 draws), and was not played at 3190.
 
-![Match results against Stockfish 19, Mai v3 and Morstilia v7-pre](docs/images/results.jpg)
+![Match results against Stockfish 19, Mai v3 and Morstilia 7.0.0](docs/images/results.jpg)
 
-At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say little about playing strength; inphish lost no game on time. 6.1.0 also scored 20 of 20 against Morstilia V6, MaiEngine and Mai V2.
+At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say little about playing strength; inphish lost no game on time. 6.1.0 also scored 20 of 20 against Morstilia V6, MaiEngine and Mai V2. 6.2.0 was checked against Stockfish 19, Mai v3 and the Morstilia 7.0.0 release only.
 
 <details>
 <summary>Every release, both time controls</summary>
 
 Compare versions within one column only. Match scores are wins / losses / draws over 20 games.
 
-| Version | Elo, 1+0.01 | Elo, 10+0.1 | [Morstilia V6](https://github.com/ALPDM447/MorstiliaChessEngine) | [MaiEngine](https://github.com/Justmaii/MaiEngine) | [Morstilia v7-pre](https://github.com/ALPDM447/MorstiliaChessEngine) | [Mai V2](https://github.com/Justmaii/MaiEngineV2) | [Mai v3](https://github.com/Justmaii/MaiEngineV3) |
-|---|---|---|---|---|---|---|---|
-| [inphish v0.1.0 pre 2](https://github.com/imInph/inphish/releases/tag/v0.1.0-preview.2) | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) | | | |
-| [inphish v0.1.0](https://github.com/imInph/inphish/releases/tag/v0.1.0) | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) | | | |
-| [inphish v1.0.0](https://github.com/imInph/inphish/releases/tag/v1.0.0) | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) | | | |
-| [inphish v2.0.0](https://github.com/imInph/inphish/releases/tag/v2.0.0) | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | | |
-| [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) | | | |
-| [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | | |
-| [inphish v4.0.0](https://github.com/imInph/inphish/releases/tag/v4.0.0) | 3149 ± 102 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | | |
-| [inphish v5.0.0](https://github.com/imInph/inphish/releases/tag/v5.0.0) | 3264 ± 123 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 0 / 17 / 3 (7) |
-| [inphish v6.0.0](https://github.com/imInph/inphish/releases/tag/v6.0.0) | 3588, 3397 to 3864 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 6 / 1 / 13 (7) |
-| [inphish v6.1.0](https://github.com/imInph/inphish/releases/tag/v6.1.0) | past 3190 (8) | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 10 / 0 / 10 (7) |
+| Version | Elo, 1+0.01 | Elo, 10+0.1 | [Morstilia V6](https://github.com/ALPDM447/MorstiliaChessEngine) | [MaiEngine](https://github.com/Justmaii/MaiEngine) | [Morstilia v7-pre](https://github.com/ALPDM447/MorstiliaChessEngine) | [Mai V2](https://github.com/Justmaii/MaiEngineV2) | [Mai v3](https://github.com/Justmaii/MaiEngineV3) | [Morstilia 7.0.0](https://github.com/ALPDM447/MorstiliaChessEngine/releases/tag/v7) |
+|---|---|---|---|---|---|---|---|---|
+| [inphish v0.1.0 pre 2](https://github.com/imInph/inphish/releases/tag/v0.1.0-preview.2) | ~740 ± 345 (1) | 1712 ± 126 | 3 / 16 / 1 (2) | 2 / 18 / 0 (2) | | | | |
+| [inphish v0.1.0](https://github.com/imInph/inphish/releases/tag/v0.1.0) | 2494 ± 90 | 2777 ± 152 | 19 / 0 / 1 (3) | 18 / 1 / 1 (3) | | | | |
+| [inphish v1.0.0](https://github.com/imInph/inphish/releases/tag/v1.0.0) | 2521 ± 84 | | 18 / 0 / 2 | 20 / 0 / 0 (4) | | | | |
+| [inphish v2.0.0](https://github.com/imInph/inphish/releases/tag/v2.0.0) | 2635 ± 97 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | | | |
+| [inphish v3.0.0](https://github.com/imInph/inphish/releases/tag/v3.0.0) | 2835 ± 97 | | 18 / 0 / 2 | 20 / 0 / 0 (4) | | | | |
+| [inphish v3.1.0](https://github.com/imInph/inphish/releases/tag/v3.1.0) | about 3.0.0 (5) | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | | | |
+| [inphish v4.0.0](https://github.com/imInph/inphish/releases/tag/v4.0.0) | 3149 ± 102 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | | | | |
+| [inphish v5.0.0](https://github.com/imInph/inphish/releases/tag/v5.0.0) | 3264 ± 123 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 0 / 17 / 3 (7) | |
+| [inphish v6.0.0](https://github.com/imInph/inphish/releases/tag/v6.0.0) | 3588, 3397 to 3864 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 6 / 1 / 13 (7) | |
+| [inphish v6.1.0](https://github.com/imInph/inphish/releases/tag/v6.1.0) | past 3190 (8) | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 10 / 0 / 10 (7) | |
+| [inphish v6.2.0](https://github.com/imInph/inphish/releases/tag/v6.2.0) | not placed (9) | | | | | | 8 / 1 / 11 (7) | 20 / 0 / 0 (10) |
 
 1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
 2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
@@ -91,6 +92,8 @@ Compare versions within one column only. Match scores are wins / losses / draws 
 6. Morstilia v7-pre (its repository at `511a656`) and Mai V2 (`e5d71bc`) played with their own opening books off. Mai V2 lost 9 of these games on time against 5.0.0 and 3 each against 6.0.0 and 6.1.0; all the Morstilia games ended in checkmate. Earlier releases did not play them.
 7. Mai v3 at Hash 16 like inphish, with its network file given by path. All games ended normally. 5.0.0 played it after release, on the same machine.
 8. 20 of 20 against Stockfish at `UCI_Elo` 3190, the highest setting, so no finite figure fits; it plays the same moves as 6.0.0 about 6% faster.
+9. Not played on the ladder, whose top rung, 3190, 6.1.0 had already won 20 to 0. It scored 20.5 of 40 against 6.1.0 and 8.5 of 20 against Stockfish 19 at full strength.
+10. The published 7.0.0 release (macOS arm64 asset) with its opening book off. All games ended in checkmate.
 
 </details>
 
@@ -126,7 +129,7 @@ target/release/inphish bench
 target/release/inphish perft 4 --fen "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
 ```
 
-`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, `eval` prints the hand-written evaluation, which play no longer uses since 4.0.0, and `bench` searches 50 fixed positions at depth 13 (`bench N` for another depth). The command-line FEN must be quoted as one argument. The bench signature is `2408299` nodes.
+`perft` counts leaf positions, `divide` prints counts by root move, `d` prints the board and position state, `eval` prints the hand-written evaluation, which play no longer uses since 4.0.0, and `bench` searches 50 fixed positions at depth 13 (`bench N` for another depth). The command-line FEN must be quoted as one argument. The bench signature is `1457280` nodes.
 
 </details>
 

@@ -1,5 +1,14 @@
 # inphzugzwang changelog
 
+## 6.2.0 - 2026-10-01
+
+- Search changes from Stockfish's development build `dev-20260930-49ea5ded`, which follows Stockfish 19, each of which gained in Stockfish's own tests: null-move pruning comes easier after earlier null-move fail highs from the same ply; razoring applies only at expected all-nodes, with a margin linear in depth, and not while searching for mate; the search for mate starts from a root score that falls with depth, 750 + 220000 / depth², instead of 2000 from depth 16; after an aspiration fail high the depth returns to full over the next iterations instead of at once; correction history also uses the move six plies back.
+- Less thinking time when behind on the clock: the optimum time is scaled by up to 0.9 of the clock deficit's share of both clocks, as in the same build, except on the last move of a time-control cycle. The UCI loop now passes the opponent's clock to the search.
+- Fixed: a negative late-move reduction, which extends the reduced search, could chain towards the maximum ply; beyond twice the root depth it no longer extends (Stockfish `1548538e`).
+- Stockfish's simplifications from the same build: a formula for the history divisor in quiet-move pruning, an uncapped quiet bonus on table cutoffs, a correction bonus after a failed-high singular search that no longer scales with depth, and shared conditions for the table cutoff and its penalty.
+- The network is unchanged: Stockfish 19's `nn-1a298aa575a0`. Speed is unchanged within measurement noise (one thread, Hash 64, ten seconds on each of two positions, alternating runs: about 736,000 nodes per second against 728,000 for 6.1.0). Bench signature: 1457280 nodes.
+- Checks at 1+0.01, Hash 16 MiB, one thread, balanced book, opening book off, on `efe905e` (the same play as the tag): 20.5/40 against 6.1.0 (9 W / 8 L / 23 D); Stockfish 19 at full strength: 8.5/20 (0 W / 3 L / 17 D; 6.1.0: 8.5); Chess960 against Stockfish at 2800: 19/20 (19 W / 1 L; 6.1.0: 20); 13.5/20 against Mai v3 (8 W / 1 L / 11 D; 6.1.0: 15); 20/20 against the Morstilia 7.0.0 release with its book off, all checkmates. No inphish time losses or illegal moves. Small samples, not Elo measurements; the Stockfish gains are a few Elo each and too small to show in them.
+
 ## 6.1.0 - 2026-09-29
 
 - Faster, with the same play: the transposition-table entry of a move's position is loaded before the move is made, from a key predicted from the move as Stockfish's `prefetch_key` does, and the new position's correction entries right after it; piece hashes are precomputed; the en passant part of the key is kept in the position, so making a move no longer copies the previous state to find it; a refresh-cache entry applies its differing pieces in one pass. On an Apple M2 with Hash 64, one thread: about 861,000 nodes per second against 812,000 for 6.0.0 in the same session. Bench signature unchanged: 2408299 nodes.

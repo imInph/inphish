@@ -33,3 +33,7 @@ Version 6.0 replaced inphish's own search with a port of Stockfish 19's, includi
 ## 6.1
 
 Version 6.1 kept 6.0's play and made it about 6% faster, mainly by loading table and correction-history entries before they are read, and added the `Contempt` and `UCI_AnalyseMode` options. Contempt, a longer time allocation, and several further speed changes were measured and are recorded in `docs/TESTING.md`; none that changed play scored better. The remaining speed gap to Stockfish 19 is spread across move making, threat indexing and move ordering, with no single large item left.
+
+## 6.2
+
+Version 6.2 ported the search changes of Stockfish's development build `dev-20260930-49ea5ded` since Stockfish 19, a fix against chains of late-move extensions, and less time when behind on the clock, keeping Stockfish 19's network. The development build's new network, which drops the piece-square output, is planned for a 7.0.0 pre-release, since Stockfish may still change it before its next release.
