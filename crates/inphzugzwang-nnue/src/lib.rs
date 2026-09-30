@@ -1,8 +1,8 @@
-//! Inference for Stockfish 19's network `nn-1a298aa575a0`, bundled in the binary. Three
-//! feature sets feed one accumulator per perspective: HalfKAv2_hm piece squares, threats
-//! of one piece on another, and pairs of pawns on the same or neighbouring files. The
-//! arithmetic follows Stockfish 19 exactly, so for any position the value equals what
-//! Stockfish 19 computes with the same network.
+//! Inference for the network `nn-252f33942263` of Stockfish's development build
+//! `49ea5ded`, bundled in the binary. Three feature sets feed one accumulator per
+//! perspective: HalfKAv2_hm piece squares, threats of one piece on another, and pairs of
+//! pawns on the same or neighbouring files. The arithmetic follows that build exactly, so
+//! for any position the value equals what it computes with the same network.
 
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
@@ -14,8 +14,8 @@ use inphzugzwang_core::{
 
 /// Width of one perspective's accumulator.
 pub const HALF: usize = 1024;
-/// Piece-square buckets of the accumulator and layer stacks, chosen by piece count.
-const BUCKETS: usize = 8;
+/// Layer stacks, chosen by piece count.
+const LAYER_STACKS: usize = 8;
 /// Features per king bucket: ten piece kinds and the kings, by 64 squares.
 const PIECE_SQUARES: usize = 11 * 64;
 const PSQ_INPUTS: usize = 32 * PIECE_SQUARES;
@@ -52,7 +52,7 @@ const PIECE_KINDS: [PieceType; 6] = [
     PieceType::King,
 ];
 
-const NET: &[u8] = include_bytes!("../net/nn-1a298aa575a0.nnue");
+const NET: &[u8] = include_bytes!("../net/nn-252f33942263.nnue");
 
 /// One of the eight layer stacks after the feature transformer.
 struct Stack {
@@ -68,9 +68,7 @@ struct Stack {
 pub struct Network {
     feature_bias: Box<[i16]>,
     feature_weights: Box<[i16]>,
-    psqt_weights: Box<[i32]>,
     extra_weights: Box<[i8]>,
-    extra_psqt_weights: Box<[i32]>,
     stacks: Box<[Stack]>,
 }
 
@@ -78,67 +76,74 @@ pub struct Network {
 #[derive(Clone)]
 pub struct Accumulator {
     pub values: [[i16; HALF]; 2],
-    pub psqt: [[i32; BUCKETS]; 2],
 }
 
 impl Default for Accumulator {
     fn default() -> Self {
         Self {
             values: [[0; HALF]; 2],
-            psqt: [[0; BUCKETS]; 2],
         }
     }
 }
 
-/// The two parts of the network's output in Stockfish's internal units, for the side to
-/// move.
+/// The network's output in Stockfish's internal units, for the side to move.
 pub struct Output {
-    pub psqt: i32,
     pub positional: i32,
 }
 
 impl Output {
-    /// Stockfish 19's `Eval::evaluate` with no optimism: the output shrunk where its two
-    /// parts disagree, scaled up with the material left and damped by the fifty-move
-    /// counter, kept below the tablebase range.
+    /// The development build's `Eval::evaluate` with no optimism.
     pub fn evaluation(&self, position: &Position) -> i32 {
         self.evaluation_with_optimism(position, 0)
     }
 
-    /// Stockfish 19's `Eval::evaluate`, where `optimism` for the side to move, set from
-    /// the root score, leans the evaluation toward that side, more so where the two parts
-    /// of the output disagree.
+    /// The development build's `Eval::evaluate`: the output leans with how far it agrees
+    /// with a material count, as does `optimism` for the side to move, set from the root
+    /// score; it is then scaled up with the material left, damped by the fifty-move
+    /// counter and kept below the tablebase range.
     pub fn evaluation_with_optimism(&self, position: &Position, optimism: i32) -> i32 {
-        let nnue = i64::from(self.psqt + self.positional);
-        let complexity = i64::from((self.psqt - self.positional).abs());
-        let optimism = i64::from(optimism);
-        let optimism = optimism + optimism * complexity / 476;
-        let nnue = nnue - nnue * complexity / 18_236;
+        let nnue = self.positional;
+        let material = simple_eval(position);
+        let material_norm = material * 1024 / (material.abs() + 1024);
+        let nnue_norm = nnue * 1024 / (nnue.abs() + 1024);
+        let alignment = material_norm * nnue_norm / 512;
+        let base = nnue + nnue * alignment / 65_536 + optimism * alignment / 16_384;
         let pawns = (position.pieces(Color::White, PieceType::Pawn)
             | position.pieces(Color::Black, PieceType::Pawn))
         .count() as i64;
-        let material = 534 * pawns + i64::from(non_pawn_material(position));
-        let value = nnue + (nnue * material + optimism * 7675) / 91_000;
-        let value = value - value * i64::from(position.halfmove_clock()) / 199;
-        value.clamp(-31_506, 31_506) as i32
+        let total = 521 * pawns + i64::from(non_pawn_material(position));
+        let value = (i64::from(base) * (90_649 + total) / 90_649) as i32;
+        let value = value - value * position.halfmove_clock() as i32 / 189;
+        value.clamp(-31_506, 31_506)
     }
+}
+
+/// Stockfish's `simple_eval`: the material balance for the side to move.
+fn simple_eval(position: &Position) -> i32 {
+    let us = position.side_to_move();
+    let them = us.other();
+    let pawns = position.pieces(us, PieceType::Pawn).count() as i32
+        - position.pieces(them, PieceType::Pawn).count() as i32;
+    208 * pawns + side_material(position, us) - side_material(position, them)
 }
 
 /// Knights, bishops, rooks and queens of both sides at Stockfish's middlegame values.
 pub fn non_pawn_material(position: &Position) -> i32 {
+    side_material(position, Color::White) + side_material(position, Color::Black)
+}
+
+/// Knights, bishops, rooks and queens of one side at Stockfish's middlegame values.
+fn side_material(position: &Position, color: Color) -> i32 {
     const VALUES: [(PieceType, i32); 4] = [
         (PieceType::Knight, 781),
         (PieceType::Bishop, 825),
         (PieceType::Rook, 1276),
         (PieceType::Queen, 2538),
     ];
-    let mut total = 0;
-    for color in [Color::White, Color::Black] {
-        for (kind, value) in VALUES {
-            total += position.pieces(color, kind).count() as i32 * value;
-        }
-    }
-    total
+    VALUES
+        .iter()
+        .map(|&(kind, value)| position.pieces(color, kind).count() as i32 * value)
+        .sum()
 }
 
 /// A short list of threat or pawn-pair features in a perspective-free encoding. Items
@@ -576,7 +581,6 @@ pub struct RefreshCache {
 #[derive(Clone)]
 struct CacheEntry {
     values: [i16; HALF],
-    psqt: [i32; BUCKETS],
     pieces: [[Bitboard; 6]; 2],
 }
 
@@ -584,7 +588,6 @@ impl RefreshCache {
     pub fn new() -> Self {
         let empty = CacheEntry {
             values: network().feature_bias[..].try_into().expect("bias width"),
-            psqt: [0; BUCKETS],
             pieces: [[Bitboard::EMPTY; 6]; 2],
         };
         Self {
@@ -736,7 +739,6 @@ impl AccumulatorStack {
                 position,
                 perspective,
                 &mut root.accumulator.values[side],
-                &mut root.accumulator.psqt[side],
                 &mut self.cache,
             );
         }
@@ -800,16 +802,11 @@ impl AccumulatorStack {
         let (earlier, later) = self.entries.split_at_mut(top);
         let (parent, entry) = (&earlier[top - 1], &mut later[0]);
         let values = &mut entry.accumulator.values[side];
-        let psqt = &mut entry.accumulator.psqt[side];
         let hybrid = last == top
             && parent.computed[side]
             && network.king_hybrid(
-                (
-                    &parent.accumulator.values[side],
-                    &parent.accumulator.psqt[side],
-                ),
+                &parent.accumulator.values[side],
                 values,
-                psqt,
                 &entry.dirty,
                 position,
                 perspective,
@@ -817,7 +814,7 @@ impl AccumulatorStack {
                 &mut self.changes,
             );
         if !hybrid {
-            network.refresh_cached(position, perspective, values, psqt, &mut self.cache);
+            network.refresh_cached(position, perspective, values, &mut self.cache);
         }
         entry.computed[side] = true;
         for next in (last..top).rev() {
@@ -847,12 +844,8 @@ impl AccumulatorStack {
         self.changes
             .fill(record, perspective, king, true, &network.extra_weights);
         network.apply_changes(
-            (
-                &parent.accumulator.values[side],
-                &parent.accumulator.psqt[side],
-            ),
+            &parent.accumulator.values[side],
             &mut child.accumulator.values[side],
-            &mut child.accumulator.psqt[side],
             &self.changes,
             forward,
         );
@@ -941,8 +934,9 @@ impl Reader<'_> {
 }
 
 impl Network {
-    /// Reads the Stockfish 19 file format: a version, a hash and a description, then the
-    /// feature transformer and eight layer stacks, each behind its own hash.
+    /// Reads the file format of the development build, Stockfish 19's without the
+    /// piece-square output: a version, a hash and a description, then the feature
+    /// transformer and eight layer stacks, each behind its own hash.
     pub fn parse(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut reader = Reader { bytes };
         if reader.u32()? != VERSION {
@@ -954,13 +948,10 @@ impl Network {
         reader.u32()?;
         let feature_bias = reader.leb128(HALF, |value| value as i16)?;
         let threat_weights = reader.i8s(THREAT_INPUTS * HALF)?;
-        let threat_psqt = reader.leb128(THREAT_INPUTS * BUCKETS, |value| value)?;
         let pair_weights = reader.i8s(PAIR_INPUTS * HALF)?;
-        let pair_psqt = reader.leb128(PAIR_INPUTS * BUCKETS, |value| value)?;
         let feature_weights = reader.leb128(PSQ_INPUTS * HALF, |value| value as i16)?;
-        let psqt_weights = reader.leb128(PSQ_INPUTS * BUCKETS, |value| value)?;
-        let mut stacks = Vec::with_capacity(BUCKETS);
-        for _ in 0..BUCKETS {
+        let mut stacks = Vec::with_capacity(LAYER_STACKS);
+        for _ in 0..LAYER_STACKS {
             reader.u32()?;
             let fc0_bias = reader.i32_array::<FC0_OUTPUTS>()?;
             let rows = reader.i8s(FC0_OUTPUTS * HALF)?;
@@ -987,14 +978,11 @@ impl Network {
             return Err("network file has trailing bytes");
         }
         let extra_weights = [threat_weights, pair_weights].concat().into_boxed_slice();
-        let extra_psqt_weights = [threat_psqt, pair_psqt].concat().into_boxed_slice();
         debug_assert_eq!(extra_weights.len(), EXTRA_INPUTS * HALF);
         Ok(Self {
             feature_bias,
             feature_weights,
-            psqt_weights,
             extra_weights,
-            extra_psqt_weights,
             stacks: stacks.into_boxed_slice(),
         })
     }
@@ -1005,77 +993,38 @@ impl Network {
             .expect("row width")
     }
 
-    fn psqt_row(&self, feature: usize) -> &[i32; BUCKETS] {
-        self.psqt_weights[feature * BUCKETS..(feature + 1) * BUCKETS]
-            .try_into()
-            .expect("bucket count")
-    }
-
-    fn extra_psqt_row(&self, feature: usize) -> &[i32; BUCKETS] {
-        self.extra_psqt_weights[feature * BUCKETS..(feature + 1) * BUCKETS]
-            .try_into()
-            .expect("bucket count")
-    }
-
     /// Adds (`sign` 1) or removes (`sign` -1) one piece-square feature in place.
-    fn toggle(
-        &self,
-        values: &mut [i16; HALF],
-        psqt: &mut [i32; BUCKETS],
-        feature: usize,
-        sign: i16,
-    ) {
+    fn toggle(&self, values: &mut [i16; HALF], feature: usize, sign: i16) {
         for (value, &weight) in values.iter_mut().zip(self.row(feature)) {
             *value = value.wrapping_add(sign.wrapping_mul(weight));
-        }
-        for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature)) {
-            *value += i32::from(sign) * weight;
         }
     }
 
     /// Adds every threat and pawn-pair feature of `position` for one perspective.
-    fn add_extras(
-        &self,
-        position: &Position,
-        perspective: Color,
-        values: &mut [i16; HALF],
-        psqt: &mut [i32; BUCKETS],
-    ) {
+    fn add_extras(&self, position: &Position, perspective: Color, values: &mut [i16; HALF]) {
         let mut features = List::<{ 2 * MAX_EXTRA }>::new();
         Indexer::new(perspective, position.king(perspective)).features(
             all_threats(position).as_slice(),
             all_pairs(position).as_slice(),
             &mut features,
         );
-        for &feature in features.as_slice() {
-            for (value, &weight) in psqt.iter_mut().zip(self.extra_psqt_row(feature as usize)) {
-                *value += weight;
-            }
-        }
         let parent = *values;
         update_values(values, &parent, self, &[], &[], &[], features.as_slice());
     }
 
     /// Recomputes one perspective's accumulator from the board.
-    pub fn refresh(
-        &self,
-        position: &Position,
-        perspective: Color,
-        values: &mut [i16; HALF],
-        psqt: &mut [i32; BUCKETS],
-    ) {
+    pub fn refresh(&self, position: &Position, perspective: Color, values: &mut [i16; HALF]) {
         values.copy_from_slice(&self.feature_bias);
-        *psqt = [0; BUCKETS];
         let king = position.king(perspective);
         for color in [Color::White, Color::Black] {
             for kind in PIECE_KINDS {
                 for square in position.pieces(color, kind) {
                     let feature = feature(perspective, king, Piece { color, kind }, square);
-                    self.toggle(values, psqt, feature, 1);
+                    self.toggle(values, feature, 1);
                 }
             }
         }
-        self.add_extras(position, perspective, values, psqt);
+        self.add_extras(position, perspective, values);
     }
 
     /// Brings a cache entry for `king` to the pieces of `position`, removing and adding
@@ -1103,13 +1052,6 @@ impl Network {
                 entry.pieces[color.index()][index] = now;
             }
         }
-        for (rows, sign) in [(&removed, -1), (&added, 1)] {
-            for &feature in rows.as_slice() {
-                for (value, &weight) in entry.psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
-                    *value += sign * weight;
-                }
-            }
-        }
         let parent = entry.values;
         update_values(
             &mut entry.values,
@@ -1128,15 +1070,13 @@ impl Network {
         position: &Position,
         perspective: Color,
         values: &mut [i16; HALF],
-        psqt: &mut [i32; BUCKETS],
         cache: &mut RefreshCache,
     ) {
         let king = position.king(perspective);
         let entry = &mut cache.entries[perspective.index() * 64 + king.index()];
         self.sync_entry(entry, position, perspective, king);
         *values = entry.values;
-        *psqt = entry.psqt;
-        self.add_extras(position, perspective, values, psqt);
+        self.add_extras(position, perspective, values);
     }
 
     /// Stockfish 19's hybrid update for a king move that stays on its half of the board,
@@ -1147,9 +1087,8 @@ impl Network {
     #[allow(clippy::too_many_arguments)]
     fn king_hybrid(
         &self,
-        parent: (&[i16; HALF], &[i32; BUCKETS]),
+        parent: &[i16; HALF],
         values: &mut [i16; HALF],
-        psqt: &mut [i32; BUCKETS],
         dirty: &Dirty,
         after: &Position,
         perspective: Color,
@@ -1183,7 +1122,7 @@ impl Network {
         // Bring the new square's entry to the current pieces.
         let new_entry = &mut cache.entries[side * 64 + new_king.index()];
         self.sync_entry(new_entry, after, perspective, new_king);
-        let (new_values, new_psqt) = (new_entry.values, new_entry.psqt);
+        let new_values = new_entry.values;
         // What the old square's entry lacks of, or has beyond, the previous pieces.
         let old_entry = &cache.entries[side * 64 + old_king.index()];
         let mut old_removed = List::<32>::new();
@@ -1206,33 +1145,15 @@ impl Network {
         }
         let mut base = [0_i16; HALF];
         for (index, slot) in base.iter_mut().enumerate() {
-            *slot = parent.0[index]
+            *slot = parent[index]
                 .wrapping_add(new_values[index])
                 .wrapping_sub(old_entry.values[index]);
-        }
-        for bucket in 0..BUCKETS {
-            psqt[bucket] = parent.1[bucket] + new_psqt[bucket] - old_entry.psqt[bucket];
-        }
-        for (rows, sign) in [(&old_removed, 1), (&old_added, -1)] {
-            for &feature in rows.as_slice() {
-                for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
-                    *value += sign * weight;
-                }
-            }
         }
         changes.fill(dirty, perspective, new_king, false, &self.extra_weights);
         if changes.overflowed() {
             return false;
         }
         let (extra_gone, extra_new) = (&changes.extra_gone, &changes.extra_new);
-        for (rows, sign) in [(extra_gone, -1), (extra_new, 1)] {
-            for &feature in rows.as_slice() {
-                let weights = self.extra_psqt_row(feature as usize);
-                for (value, &weight) in psqt.iter_mut().zip(weights) {
-                    *value += sign * weight;
-                }
-            }
-        }
         update_values(
             values,
             &base,
@@ -1249,9 +1170,8 @@ impl Network {
     /// them: forward, the changes of the move leading to it, or backward, undoing them.
     fn apply_changes(
         &self,
-        parent: (&[i16; HALF], &[i32; BUCKETS]),
+        parent: &[i16; HALF],
         values: &mut [i16; HALF],
-        psqt: &mut [i32; BUCKETS],
         changes: &Changes,
         forward: bool,
     ) {
@@ -1262,35 +1182,14 @@ impl Network {
         } else {
             (new, gone, extra_new, extra_gone)
         };
-        *psqt = *parent.1;
-        for (rows, sign) in [(gone, -1), (new, 1)] {
-            for &feature in rows {
-                for (value, &weight) in psqt.iter_mut().zip(self.psqt_row(feature as usize)) {
-                    *value += sign * weight;
-                }
-            }
-        }
-        for (rows, sign) in [(extra_gone, -1), (extra_new, 1)] {
-            for &feature in rows {
-                let weights = self.extra_psqt_row(feature as usize);
-                for (value, &weight) in psqt.iter_mut().zip(weights) {
-                    *value += sign * weight;
-                }
-            }
-        }
-        update_values(values, parent.0, self, gone, new, extra_gone, extra_new);
+        update_values(values, parent, self, gone, new, extra_gone, extra_new);
     }
 
     pub fn fresh(&self, position: &Position) -> Accumulator {
         let mut accumulator = Accumulator::default();
         for perspective in [Color::White, Color::Black] {
             let side = perspective.index();
-            self.refresh(
-                position,
-                perspective,
-                &mut accumulator.values[side],
-                &mut accumulator.psqt[side],
-            );
+            self.refresh(position, perspective, &mut accumulator.values[side]);
         }
         accumulator
     }
@@ -1300,7 +1199,6 @@ impl Network {
         let side = position.side_to_move();
         let bucket = (position.occupied().count() as usize - 1) / 4;
         let (us, them) = (side.index(), side.other().index());
-        let psqt = (accumulator.psqt[us][bucket] - accumulator.psqt[them][bucket]) / 2;
         // Each perspective's two halves are clipped to 0 to 255 and multiplied pairwise.
         let mut input = [0_u8; HALF];
         for (half, perspective) in [us, them].into_iter().enumerate() {
@@ -1334,7 +1232,6 @@ impl Network {
         let positional = i64::from(forward) * (600 * i64::from(OUTPUT_SCALE))
             / (128 * (1 << WEIGHT_SCALE_BITS) * 2);
         Output {
-            psqt: psqt / OUTPUT_SCALE,
             positional: positional as i32 / OUTPUT_SCALE,
         }
     }

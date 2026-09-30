@@ -4,17 +4,16 @@ use inphzugzwang_nnue::{network, AccumulatorStack, Network};
 const REFERENCE: &str = include_str!("../../../tests/nnue/reference.txt");
 
 #[test]
-fn matches_stockfish_19_exactly() {
+fn matches_stockfish_dev_exactly() {
     let network = network();
     let mut count = 0;
     for line in REFERENCE.lines().filter(|line| !line.starts_with('#')) {
         let fields: Vec<&str> = line.split('|').collect();
-        let [fen, psqt, positional, evaluation] = fields[..] else {
+        let [fen, positional, evaluation] = fields[..] else {
             panic!("{line}");
         };
         let position = Position::from_fen(fen).expect(fen);
         let output = network.evaluate_position(&position);
-        assert_eq!(output.psqt, psqt.parse::<i32>().unwrap(), "{fen}");
         assert_eq!(
             output.positional,
             positional.parse::<i32>().unwrap(),
@@ -34,7 +33,7 @@ fn matches_stockfish_19_exactly() {
 
 #[test]
 fn rejects_damaged_files() {
-    let bytes = include_bytes!("../net/nn-1a298aa575a0.nnue");
+    let bytes = include_bytes!("../net/nn-252f33942263.nnue");
     assert!(Network::parse(&bytes[..bytes.len() - 1]).is_err());
     let mut longer = bytes.to_vec();
     longer.push(0);
@@ -63,7 +62,7 @@ fn walk(
             let fresh = network.fresh(position);
             let current = stack.current(position);
             assert!(
-                current.values == fresh.values && current.psqt == fresh.psqt,
+                current.values == fresh.values,
                 "{} after {}",
                 position.fen(),
                 position.format_move(mv, true)
