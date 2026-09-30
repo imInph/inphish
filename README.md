@@ -66,6 +66,17 @@ The large steps are the preview to 0.1.0, which added the tapered evaluation and
 At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say little about playing strength; inphish lost no game on time. 6.1.0 also scored 20 of 20 against Morstilia V6, MaiEngine and Mai V2. 6.2.0 was checked against Stockfish 19, Mai v3 and the Morstilia 7.0.0 release only.
 
 <details>
+<summary>Pre-release: 7.0.0-pre.1</summary>
+
+[inphish v7.0.0-pre.1](https://github.com/imInph/inphish/releases/tag/v7.0.0-pre.1) is a test build with the network of Stockfish's development build, `nn-252f33942263`, which drops the piece-square output; inphish matches that build exactly on 2,253 positions. It may change before Stockfish's next release. The search is 6.2.0's. It scored 21 of 40 against 6.2.0; against Stockfish 19 at full strength 6 of 20, then 16.5 of 40 in a second run, 22.5 of 60 in all.
+
+![Match results of 7.0.0-pre.1](docs/images/pre/results.jpg)
+
+![Features of 7.0.0-pre.1](docs/images/pre/features.jpg)
+
+</details>
+
+<details>
 <summary>Every release, both time controls</summary>
 
 Compare versions within one column only. Match scores are wins / losses / draws over 20 games.
