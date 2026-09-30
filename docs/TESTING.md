@@ -32,7 +32,7 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench
 ```
 
-The bench searches at depth 13 by default, and its signature is `1518654` nodes. It must match in debug and release builds and on supported platforms.
+The bench searches at depth 13 by default, and its signature is `1457280` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 

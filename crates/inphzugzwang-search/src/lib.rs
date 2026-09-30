@@ -42,12 +42,14 @@ const TB_WIN_IN_MAX_PLY: i32 = VALUE_TB - MAX_PLY as i32;
 const DEPTH_QS: i32 = 0;
 const DEPTH_UNSEARCHED: i32 = -2;
 pub(crate) const DEPTH_NONE: i32 = -3;
-/// Stockfish 19's divisors of history in the reduced depth of quiet-move pruning.
-const LMR_DIVISOR: [i32; 16] = [
-    3637, 2787, 2761, 2939, 3171, 3347, 3147, 2762, 2772, 3106, 3107, 3060, 3112, 2991, 3090, 3542,
-];
 /// Searched moves remembered per node for history maluses.
 const SEARCHED_CAPACITY: usize = 32;
+
+/// Divisor of history in the reduced depth of quiet-move pruning.
+fn lmr_divisor(depth: i32) -> i32 {
+    let d = depth.min(16);
+    3000 + 7 * (d - 8) * (d - 8)
+}
 
 fn is_valid(value: i32) -> bool {
     value != VALUE_NONE
@@ -1619,52 +1621,44 @@ impl<'a> Worker<'a> {
         if prior_reduction >= 2 && depth >= 2 && static_eval + self.at(ply, 1).static_eval > 166 {
             depth -= 1;
         }
-        // Table cutoff at non-PV nodes.
-        let tt_deep = tt_depth > depth - i32::from(tt_value <= beta);
+        // Table cutoff at non-PV nodes, from an entry deep enough.
         if !PV
             && excluded == Move::NULL
-            && tt_deep
             && is_valid(tt_value)
-            && tt_bound.covers(tt_value >= beta)
-            && (cut_node == (tt_value >= beta) || depth > 4)
+            && tt_depth > depth - i32::from(tt_value <= beta)
         {
-            if tt_move != Move::NULL && tt_value >= beta {
-                if !tt_capture {
-                    self.update_quiet_histories(ply, tt_move, (112 * depth).min(695));
-                }
-                if self.at(ply, 1).move_count < 5 && !prior_capture {
-                    if let Some(square) = previous_square {
-                        self.update_continuation_histories(ply - 1, square, -2210);
+            if tt_bound.covers(tt_value >= beta) && (cut_node == (tt_value >= beta) || depth > 4) {
+                if tt_move != Move::NULL && tt_value >= beta {
+                    if !tt_capture {
+                        self.update_quiet_histories(ply, tt_move, 131 * depth);
                     }
-                }
-            }
-            if rule50 < 96 {
-                if depth >= 7 && tt_move != Move::NULL && !is_decisive(tt_value) {
-                    // The cutoff stands if the position after the table move agrees.
-                    self.position.make(tt_move);
-                    let next = self.tt.probe(table_key(&self.position));
-                    self.position.unmake();
-                    match next.filter(|record| is_valid(record.score)) {
-                        None => return tt_value,
-                        Some(record) if (tt_value >= beta) == (-record.score >= beta) => {
-                            return tt_value
+                    if self.at(ply, 1).move_count < 5 && !prior_capture {
+                        if let Some(square) = previous_square {
+                            self.update_continuation_histories(ply - 1, square, -2210);
                         }
-                        _ => {}
                     }
-                } else {
-                    return tt_value;
                 }
+                if rule50 < 96 {
+                    if depth >= 7 && tt_move != Move::NULL && !is_decisive(tt_value) {
+                        // The cutoff stands if the position after the table move agrees.
+                        self.position.make(tt_move);
+                        let next = self.tt.probe(table_key(&self.position));
+                        self.position.unmake();
+                        match next.filter(|record| is_valid(record.score)) {
+                            None => return tt_value,
+                            Some(record) if (tt_value >= beta) == (-record.score >= beta) => {
+                                return tt_value
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        return tt_value;
+                    }
+                }
+            } else if tt_bound != Bound::Exact && tt_bound.covers(tt_value < beta) && depth > 5 {
+                // Only the bound kept this entry from cutting; it is worth less now.
+                self.tt.penalize(key, 1);
             }
-        } else if !PV
-            && excluded == Move::NULL
-            && tt_deep
-            && is_valid(tt_value)
-            && tt_bound != Bound::Exact
-            && tt_bound.covers(tt_value < beta)
-            && depth > 5
-        {
-            // Only the bound kept this entry from cutting; it is worth less now.
-            self.tt.penalize(key, 1);
         }
         // Tablebases.
         if !ROOT && excluded == Move::NULL {
@@ -1915,7 +1909,6 @@ impl<'a> Worker<'a> {
                         continue;
                     }
                 } else if !self.at(ply, 0).follow_pv || !PV {
-                    let index = (depth.min(LMR_DIVISOR.len() as i32) - 1) as usize;
                     let histories = &self.memory.histories;
                     let mut history = histories.continuation(continuations[0], square)
                         + histories.continuation(continuations[1], square)
@@ -1924,7 +1917,7 @@ impl<'a> Worker<'a> {
                         continue;
                     }
                     history += 69 * histories.main(us, mv) / 32;
-                    lmr_depth += history / LMR_DIVISOR[index];
+                    lmr_depth += history / lmr_divisor(depth);
                     let futility =
                         static_eval + 119 * lmr_depth + 90 * i32::from(static_eval > alpha) + 164;
                     if !in_check && lmr_depth < 12 && futility <= alpha {
@@ -1984,7 +1977,7 @@ impl<'a> Worker<'a> {
                 } else if value >= beta && !is_decisive(value) {
                     self.memory.histories.update_tt_move(-421 - 110 * depth);
                     if !in_check && value > static_eval {
-                        let bonus = ((value - static_eval) * singular_depth * 177 / 1024)
+                        let bonus = ((value - static_eval) * 664 / 1024)
                             .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4);
                         self.update_correction_history(ply, bonus);
                     }
