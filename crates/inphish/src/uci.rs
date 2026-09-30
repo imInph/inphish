@@ -570,6 +570,11 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
             } else {
                 btime
             };
+            let opponent = if position.side_to_move() == Color::White {
+                btime
+            } else {
+                wtime
+            };
             let increment = if position.side_to_move() == Color::White {
                 winc
             } else {
@@ -581,6 +586,7 @@ fn parse_go(words: &[&str], position: &Position, overhead: u64, chess960: bool) 
                 limits.immediate = !limits.ponder && remaining <= overhead.saturating_add(30);
                 limits.clock = Some(Clock {
                     time: remaining,
+                    opponent_time: opponent.unwrap_or(0),
                     increment,
                     movestogo,
                     overhead,

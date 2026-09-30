@@ -87,6 +87,8 @@ fn to_centipawns(value: i32) -> i32 {
 pub struct Clock {
     /// Milliseconds left on the clock of the side to move.
     pub time: u64,
+    /// Milliseconds left on the other clock, 0 when unknown.
+    pub opponent_time: u64,
     pub increment: u64,
     pub movestogo: Option<u64>,
     pub overhead: u64,
@@ -180,7 +182,7 @@ fn allocate(clock: &Clock, ply: u32, time_adjust: &mut Option<f64>) -> (u64, u64
     }
     let left = (time + increment * (horizon - 1.0) - overhead * (2.0 + horizon)).max(1.0);
     let ply = f64::from(ply);
-    let (optimum_scale, maximum_scale) = if clock.movestogo.is_none() {
+    let (mut optimum_scale, maximum_scale) = if clock.movestogo.is_none() {
         let adjust = *time_adjust.get_or_insert(0.3272 * left.log10() - 0.4141);
         let log_time = (time / 1000.0).log10();
         let optimum_constant = (0.002_986_9 + 0.000_335_54 * log_time).min(0.004_905);
@@ -197,6 +199,13 @@ fn allocate(clock: &Clock, ply: u32, time_adjust: &mut Option<f64>) -> (u64, u64
             1.3 + 0.11 * horizon,
         )
     };
+    // Less time when behind on the clock. Not on the last move of a cycle, where the
+    // other clock may already hold the next cycle's time.
+    if clock.movestogo != Some(1) {
+        let opponent = clock.opponent_time as f64;
+        let advantage = (time - opponent) / (1.0 + time + opponent);
+        optimum_scale *= 1.0 + 0.9 * advantage.min(0.0);
+    }
     let optimum = (optimum_scale * left).max(1.0);
     let maximum = optimum.max((0.8097 * time - overhead).min(maximum_scale * optimum));
     // Always a margin short of the flag.
@@ -2604,6 +2613,7 @@ mod tests {
         for (time, increment) in [(1000, 10), (60_000, 1000), (300, 10), (20, 0)] {
             let clock = Clock {
                 time,
+                opponent_time: time,
                 increment,
                 movestogo: None,
                 overhead: 10,
@@ -2612,5 +2622,24 @@ mod tests {
             assert!(optimum >= 1 && optimum <= maximum, "{time}");
             assert!(maximum + 10 <= time.max(16), "{time} {maximum}");
         }
+    }
+
+    #[test]
+    fn allocation_falls_when_behind() {
+        let optimum = |opponent_time, movestogo| {
+            let clock = Clock {
+                time: 30_000,
+                opponent_time,
+                increment: 300,
+                movestogo,
+                overhead: 10,
+            };
+            allocate(&clock, 20, &mut None).0
+        };
+        assert!(optimum(60_000, None) < optimum(30_000, None));
+        assert_eq!(optimum(10_000, None), optimum(30_000, None));
+        assert_eq!(optimum(0, None), optimum(30_000, None));
+        assert!(optimum(60_000, Some(20)) < optimum(30_000, Some(20)));
+        assert_eq!(optimum(60_000, Some(1)), optimum(30_000, Some(1)));
     }
 }
