@@ -287,6 +287,8 @@ struct Frame {
     follow_pv: bool,
     cutoff_count: i32,
     reduction: i32,
+    /// Null-move searches from this ply that failed high since its parent was entered.
+    prior_nmp_fail_high: i32,
 }
 
 impl Default for Frame {
@@ -306,6 +308,7 @@ impl Default for Frame {
             follow_pv: false,
             cutoff_count: 0,
             reduction: 0,
+            prior_nmp_fail_high: 0,
         }
     }
 }
@@ -989,6 +992,7 @@ impl<'a> Worker<'a> {
             [
                 self.at(ply, 1).correction_row,
                 self.at(ply, 3).correction_row,
+                self.at(ply, 5).correction_row,
             ],
             square,
         );
@@ -1055,13 +1059,15 @@ impl<'a> Worker<'a> {
         let black = histories.correction(Correction::BlackNonPawn, black, side);
         let continuation = match self.previous_square(ply) {
             Some(square) => {
-                8761 * (histories.continuation_correction(self.at(ply, 2).correction_row, square)
+                7885 * (histories.continuation_correction(self.at(ply, 2).correction_row, square)
                     + histories.continuation_correction(self.at(ply, 4).correction_row, square))
+                    + 6307
+                        * histories.continuation_correction(self.at(ply, 6).correction_row, square)
             }
             None if self.at(ply, 1).mv != Move::NULL => 0,
-            None => 64_049,
+            None => 80_695,
         };
-        15_341 * pawn + 10_569 * minor + 12_906 * (white + black) + continuation
+        13_806 * pawn + 9_512 * minor + 11_615 * (white + black) + continuation
     }
 
     fn update_correction_history(&mut self, ply: usize, bonus: i32) {
@@ -1072,6 +1078,7 @@ impl<'a> Worker<'a> {
         let rows = (
             self.at(ply, 2).correction_row,
             self.at(ply, 4).correction_row,
+            self.at(ply, 6).correction_row,
         );
         let histories = &mut self.memory.histories;
         histories.update_correction(Correction::Pawn, pawn_key, side, bonus);
@@ -1081,6 +1088,7 @@ impl<'a> Worker<'a> {
         if let Some(square) = previous {
             histories.update_continuation_correction(rows.0, square, bonus * 130 / 128);
             histories.update_continuation_correction(rows.1, square, bonus * 70 / 128);
+            histories.update_continuation_correction(rows.2, square, bonus * 35 / 128);
         }
     }
 
@@ -1247,6 +1255,7 @@ impl<'a> Worker<'a> {
         let mut time_reduction = 1.0;
         let mut total_changes = 0.0;
         let mut search_again = 0;
+        let mut fail_high_recovery = 0;
         let mut best_value = -VALUE_INFINITE;
         let multi_pv = self.line_count();
         self.memory.histories.start_search();
@@ -1298,10 +1307,16 @@ impl<'a> Worker<'a> {
                 let optimism = 114 * average / (average.abs() + 85);
                 self.optimism[us] = optimism;
                 self.optimism[1 - us] = -optimism;
+                if self.pv_index == 0 {
+                    fail_high_recovery = (fail_high_recovery - 2).max(0);
+                }
                 let mut failed_high = 0;
                 loop {
-                    let adjusted =
-                        (self.root_depth - failed_high - 3 * (search_again + 1) / 4).max(1);
+                    let adjusted = (self.root_depth
+                        - failed_high
+                        - fail_high_recovery
+                        - 3 * (search_again + 1) / 4)
+                        .max(1);
                     self.root_delta = (beta - alpha).max(1);
                     best_value = self.search::<true, true>(adjusted, alpha, beta, 0, false);
                     stable_sort(&mut self.root_moves[self.pv_index..self.pv_last]);
@@ -1320,6 +1335,10 @@ impl<'a> Worker<'a> {
                         break;
                     }
                     delta += 47 * delta / 128;
+                }
+                // After a fail high the depth returns to full over the next iterations.
+                if failed_high > 0 && self.pv_index == 0 {
+                    fail_high_recovery = (failed_high + 1) / 2 + 2;
                 }
                 // A line cut short by the stop keeps its last exact result rather than an
                 // unfinished loss.
@@ -1459,7 +1478,9 @@ impl<'a> Worker<'a> {
         cut_node: bool,
     ) -> i32 {
         let all_node = !(PV || cut_node);
-        let seek_mate = self.root_depth >= 16 && self.root_moves[self.pv_index].score.abs() >= 2000;
+        // As in Stockfish, these values are not tuned for playing strength.
+        let seek_mate = self.root_moves[self.pv_index].score.abs()
+            >= 750 + 220_000 / (self.root_depth * self.root_depth);
         if depth <= 0 {
             return self.quiescence::<PV>(alpha, beta, ply);
         }
@@ -1515,6 +1536,7 @@ impl<'a> Worker<'a> {
         self.at_mut(ply, 1).reduction = 0;
         self.at_mut(ply, 0).stat_score = 0;
         self.at_mut(ply + 2, 0).cutoff_count = 0;
+        self.at_mut(ply + 1, 0).prior_nmp_fail_high = 0;
         let correction = self.correction_value(ply);
         // Transposition table lookup. A stored move that is not legal here marks a key
         // collision, and the entry is ignored.
@@ -1687,7 +1709,7 @@ impl<'a> Worker<'a> {
                 }
             }
             // Razoring.
-            if !PV && eval < alpha - 482 * depth * depth {
+            if all_node && eval < alpha - 342 * depth && !seek_mate {
                 return self.quiescence::<false>(alpha, beta, ply);
             }
             // Reverse futility pruning.
@@ -1710,7 +1732,8 @@ impl<'a> Worker<'a> {
             }
             // Null move search with verification.
             if cut_node
-                && static_eval >= beta - 13 * depth - 47 * i32::from(improving) + 365
+                && static_eval + 50 * self.at(ply, 0).prior_nmp_fail_high
+                    >= beta - 13 * depth - 47 * i32::from(improving) + 365
                 && excluded == Move::NULL
                 && non_pawn_material(&self.position, side) != 0
                 && ply >= self.nmp_min_ply
@@ -1732,6 +1755,7 @@ impl<'a> Worker<'a> {
                 }
                 if null_value >= beta && !is_win(null_value) {
                     if self.nmp_min_ply != 0 || depth < 16 {
+                        self.at_mut(ply, 0).prior_nmp_fail_high += 1;
                         return null_value;
                     }
                     self.nmp_min_ply = ply + (3 * (depth - reduction) / 4).max(0) as usize;
@@ -1739,6 +1763,7 @@ impl<'a> Worker<'a> {
                         self.search::<false, false>(depth - reduction, beta - 1, beta, ply, false);
                     self.nmp_min_ply = 0;
                     if value >= beta {
+                        self.at_mut(ply, 0).prior_nmp_fail_high += 1;
                         return null_value;
                     }
                 }

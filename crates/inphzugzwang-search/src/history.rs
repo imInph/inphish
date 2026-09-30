@@ -197,7 +197,7 @@ impl Histories {
     pub(super) fn prefetch_corrections(
         &self,
         keys: [u64; 4],
-        rows: [usize; 2],
+        rows: [usize; 3],
         piece_square: usize,
     ) {
         for key in keys {
