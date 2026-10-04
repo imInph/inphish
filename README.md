@@ -68,7 +68,7 @@ At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say lit
 <details>
 <summary>Pre-release: 7.0.0-pre.2 candidate</summary>
 
-**7.0.0-pre.2 is prepared locally, not yet tagged or published.** It builds on pre.1's SFNNv17 network, `nn-252f33942263`, with the same default search and bench signature, **1525540**.
+**7.0.0-pre.2 is prepared on `main`, not yet tagged or published.** It builds on pre.1's SFNNv17 network, `nn-252f33942263`, with the same default search and bench signature, **1525540**.
 
 - `Ponder` enables predicted replies for GUIs that let the engine think during the opponent's turn. Completed searches, including terminal positions, wait for `ponderhit` or `stop`.
 - `EvalFile` loads external networks with the same SFNNv17 architecture. Empty or `<empty>` restores the bundled network; a failed load keeps the previous network. Running and queued searches retain their original weights and search tables.
@@ -85,11 +85,13 @@ Revision `f0d6a93` scored **23/40 against pre.1: 10 wins, 4 losses and 26 draws*
 
 An accumulator prefetch experiment was removed: four alternating speed trials at Hash 64, one thread and ten seconds on each of two positions averaged 844,070 nodes per second without it and 842,560 with it, with no repeatable gain.
 
+![Match and WDL validation results of the 7.0.0-pre.2 candidate](docs/images/pre/results.jpg)
+
+![Features of 7.0.0-pre.2](docs/images/pre/features.jpg)
+
 [inphish v7.0.0-pre.1](https://github.com/imInph/inphish/releases/tag/v7.0.0-pre.1) is a test build with the network of Stockfish's development build, `nn-252f33942263`, which drops the piece-square output; inphish matches that build exactly on 2,253 positions. It may change before Stockfish's next release. The search is 6.2.0's. It scored 21 of 40 against 6.2.0; against Stockfish 19 at full strength 6 of 20, then 16.5 of 40 in a second run, 22.5 of 60 in all.
 
-![Match results of 7.0.0-pre.1](docs/images/pre/results.jpg)
-
-![Features of 7.0.0-pre.1](docs/images/pre/features.jpg)
+![Original match results of 7.0.0-pre.1, before its Stockfish rerun](docs/images/pre/results-pre1.jpg)
 
 </details>
 
