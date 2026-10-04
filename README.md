@@ -7,8 +7,6 @@
 
 inphish is a UCI chess engine written in Rust. It has no graphical interface of its own: run it inside a chess GUI or tournament manager, where it speaks UCI over standard input and output.
 
-Version 7.0.0 is being prepared. The latest published stable release is still 6.2.0.
-
 ## Quick start
 
 1. Download the archive for your system from [Releases](https://github.com/imInph/inphish/releases): Linux x86-64, Windows x86-64, `macos-aarch64` for Apple Silicon, or `macos-x86_64` for Intel Macs.
@@ -66,11 +64,11 @@ No rating-list Elo has been measured. Each release is placed on Stockfish 19's `
 
 The large steps are the preview to 0.1.0, which added the tapered evaluation and selective search, 3.0.0, which added the NNUE network, 4.0.0, which moved to Stockfish 15.1's larger network with faster move generation and more selective search, 5.0.0, which moved to Stockfish 19's network with threat and pawn-pair inputs, and 6.0.0, which ported Stockfish 19's search. Between 0.1.0 and 2.0.0 the differences are within the ranges. 4.0.0 scored about even, 5.0.0 12.5 and 6.0.0 18.5 of 20 against Stockfish at its highest setting, 3190, so their figures rest on the top of the scale and are the least certain; 6.0.0's range runs from 3397 to 3864. Against Stockfish 19 at full strength 6.0.0 scored 8 of 20 (2 wins, 6 losses, 12 draws). 6.1.0 plays the same moves as 6.0.0, about 6% faster; it scored 20 of 20 at 3190, which puts it past the top of the scale, so it has no figure of its own, and 8.5 of 20 against Stockfish at full strength (2 wins, 5 losses, 13 draws). Head-to-head matches between versions exaggerate the gaps: 1.0.0 scored 30 of 40 against 0.1.0, 3.0.0 scored 34.5 of 40 against 2.0.0, 3.1.0 scored 36 and 38.5 of 40 against 1.0.0 and 2.0.0, 4.0.0 scored 32 of 40 against 3.1.2, 5.0.0 23 of 40 against 4.0.0, although it searches about half as many nodes per second, and 6.0.0 37.5 of 40 against 5.0.0. 6.1.0 scored 20 of 40 against 6.0.0, 34 of them draws, as expected for the same search a little faster. 6.2.0 ports the search changes of Stockfish's development build after Stockfish 19; it scored 20.5 of 40 against 6.1.0 and 8.5 of 20 against Stockfish 19 at full strength (no wins, 3 losses, 17 draws), and was not played at 3190.
 
-The 7.0.0 stable candidate keeps 6.2.0's search and adds SFNNv17, pondering, external networks, optional book builds and updated calibration. Revision `d50ec0f` scored **21/40 against 6.2.0** (6 wins, 4 losses, 30 draws), **10.5/20 against full-strength Stockfish 19**, **20/20 in Chess960 against Stockfish at 2800**, **13.5/20 against Mai v3**, and **20/20 against Morstilia 7.0.0**, all at 1+0.01, Hash 16, one thread and books off. All games ended normally. These are small regression checks; no strength gain or new ladder Elo is claimed. `UCI_Elo` was checked at matching settings against Stockfish and its middle and top budgets adjusted; it remains approximate. The fixed WDL model improved log loss on 80 new peer games from 0.554 to 0.339, without refitting.
+Version 7.0.0 keeps 6.2.0's search and adds SFNNv17, pondering, external networks, optional book builds and updated calibration. Revision `d50ec0f` scored **21/40 against 6.2.0** (6 wins, 4 losses, 30 draws), **10.5/20 against full-strength Stockfish 19**, **20/20 in Chess960 against Stockfish at 2800**, **13.5/20 against Mai v3**, and **20/20 against Morstilia 7.0.0**, all at 1+0.01, Hash 16, one thread and books off. All games ended normally. These are small regression checks; no strength gain or new ladder Elo is claimed. `UCI_Elo` was checked at matching settings against Stockfish and its middle and top budgets adjusted; it remains approximate. The fixed WDL model improved log loss on 80 new peer games from 0.554 to 0.339, without refitting.
 
 ![Match results against Stockfish 19, Mai v3 and Morstilia 7.0.0](docs/images/results.jpg)
 
-At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say little about playing strength; inphish lost no game on time. 6.1.0 also scored 20 of 20 against Morstilia V6, MaiEngine and Mai V2. 6.2.0 and the 7.0.0 candidate were checked against Stockfish 19, Mai v3 and the Morstilia 7.0.0 release only.
+At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say little about playing strength; inphish lost no game on time. 6.1.0 also scored 20 of 20 against Morstilia V6, MaiEngine and Mai V2. 6.2.0 and 7.0.0 were checked against Stockfish 19, Mai v3 and the Morstilia 7.0.0 release only.
 
 <details>
 <summary>7.0.0 pre-release history</summary>
@@ -114,7 +112,7 @@ Compare versions within one column only. Match scores are wins / losses / draws 
 | [inphish v6.0.0](https://github.com/imInph/inphish/releases/tag/v6.0.0) | 3588, 3397 to 3864 | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 6 / 1 / 13 (7) | |
 | [inphish v6.1.0](https://github.com/imInph/inphish/releases/tag/v6.1.0) | past 3190 (8) | | 20 / 0 / 0 | 20 / 0 / 0 (4) | 20 / 0 / 0 | 20 / 0 / 0 (6) | 10 / 0 / 10 (7) | |
 | [inphish v6.2.0](https://github.com/imInph/inphish/releases/tag/v6.2.0) | not placed (9) | | | | | | 8 / 1 / 11 (7) | 20 / 0 / 0 (10) |
-| 7.0.0 candidate | not placed (11) | | | | | | 9 / 2 / 9 (7) | 20 / 0 / 0 (10) |
+| [inphish v7.0.0](https://github.com/imInph/inphish/releases/tag/v7.0.0) | not placed (11) | | | | | | 9 / 2 / 9 (7) | 20 / 0 / 0 (10) |
 
 1. At 1+0.01 the preview's clock handling played 47% of its moves instantly without searching, so this measures that bug rather than the engine.
 2. At 10+0.1, on a build of the preview's era rather than the tagged revision.
@@ -126,7 +124,7 @@ Compare versions within one column only. Match scores are wins / losses / draws 
 8. 20 of 20 against Stockfish at `UCI_Elo` 3190, the highest setting, so no finite figure fits; it plays the same moves as 6.0.0 about 6% faster.
 9. Not played on the ladder, whose top rung, 3190, 6.1.0 had already won 20 to 0. It scored 20.5 of 40 against 6.1.0 and 8.5 of 20 against Stockfish 19 at full strength.
 10. The published Morstilia 7.0.0 release (macOS arm64 asset) with its opening book off. All games ended in checkmate.
-11. No unrestricted-strength ladder match was run. The candidate's limited-strength checks calibrate its settings, not its full-strength rating.
+11. No unrestricted-strength ladder match was run. The limited-strength checks calibrate its settings, not its full-strength rating.
 
 </details>
 

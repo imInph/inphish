@@ -308,7 +308,7 @@ tools/sprt.sh HEAD HEAD^ /path/to/openings.epd /tmp/inphish-sprt.pgn
 The default test uses 8+0.08 seconds, one search thread per engine, a 0 to 5 Elo SPRT, and four concurrent games. `SPRT_TC`, `SPRT_ROUNDS`, `SPRT_CONCURRENCY`, `SPRT_ELO0`, `SPRT_ELO1`, and `SPRT_FASTCHESS` override the defaults. Use `SPRT_ELO0=-5 SPRT_ELO1=0` for a non-regression test. Keep the fastchess terminal output and PGN with the result. If the test reaches a decision, record the LLR, bounds, W/L/D counts, time control, and bench signature; otherwise label the result inconclusive.
 
 
-## 7.0: stable candidate
+## 7.0: Open Water
 
 The two pre-releases introduced SFNNv17 (`nn-252f33942263`) and Stockfish development build `49ea5ded`'s evaluation formula, then full UCI pondering, compatible external weights through `EvalFile`, builds without the bundled book, and refitted WDL estimates. The default search remains 6.2's. Bench signature: `1525540`. Bundled and external network-loading paths match the 2,253 reference positions exactly; incremental updates are also compared with fresh evaluation. The UCI tests exercise hit and missed predictions, completed and terminal ponder searches, external network swaps during active and queued searches, failed loads, and restoration of the bundled weights.
 
@@ -355,3 +355,5 @@ Evidence labels (PGNs and logs are kept outside the repository):
 - `20261004-150127-d50ec0f-vs-SF19-960-elo2800-v7release-1_0.01`
 - `20261004-150153-d50ec0f-vs-MaiV3-h16-v7release-1_0.01`
 - `20261004-150229-d50ec0f-vs-Morstilia-7-v7release-1_0.01`
+
+The pre-release feature candidate and engine revision `d50ec0f` passed local checks; documentation-and-figure candidate `2567511` passed CI on Linux, Windows and macOS. The release preparation that follows changes documentation only, with identical engine code.

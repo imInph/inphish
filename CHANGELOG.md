@@ -1,6 +1,6 @@
 # inphzugzwang changelog
 
-## 7.0.0 - Unreleased — Open Water
+## 7.0.0 - 2026-10-04 — Open Water
 
 - SFNNv17 network `nn-252f33942263` and the evaluation formula from Stockfish development build `49ea5ded`, replacing Stockfish 19's separate piece-square output. Bundled and external loading match the reference exactly on 2,253 positions. The default search remains 6.2's; bench signature: 1525540.
 - Complete UCI pondering with `Ponder`, predicted replies, `ponderhit`, and correct waits for completed and terminal searches.
