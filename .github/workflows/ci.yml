@@ -18,3 +18,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --release
+      - run: cargo clippy -p inphish --no-default-features --all-targets -- -D warnings
+      - run: cargo test --release -p inphish --no-default-features
+      - run: python3 tools/test_wdl_fit.py
+        if: runner.os == 'Linux'
