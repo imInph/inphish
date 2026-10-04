@@ -49,6 +49,7 @@ struct Engine {
     /// Centipawns by which a draw counts as worse than even for the engine.
     contempt: i32,
     analyse_mode: bool,
+    ponder: bool,
     show_wdl: bool,
     tablebases: Option<Arc<Tablebases>>,
     chess960: bool,
@@ -94,6 +95,7 @@ pub fn run() -> io::Result<()> {
         elo: STRENGTH_MAX,
         contempt: CONTEMPT_DEFAULT,
         analyse_mode: false,
+        ponder: false,
         show_wdl: false,
         tablebases: None,
         chess960: false,
@@ -136,13 +138,20 @@ pub fn run() -> io::Result<()> {
                         |mv| active.position.format_move(mv, active.chess960),
                     );
                     let mut line = format!("bestmove {best}");
-                    if result.info.pv.len() > 1 && active.position.is_legal(result.info.pv[0]) {
+                    if engine.ponder && result.best.is_some_and(|mv| active.position.is_legal(mv)) {
                         let mut after = active.position.clone();
-                        after.make(result.info.pv[0]);
-                        if after.is_legal(result.info.pv[1]) {
+                        after.make(result.best.expect("legal best move"));
+                        if let Some(reply) = result
+                            .info
+                            .pv
+                            .get(1)
+                            .copied()
+                            .filter(|&mv| after.is_legal(mv))
+                            .or_else(|| engine.hash.ponder_move(&after))
+                        {
                             line.push_str(&format!(
                                 " ponder {}",
-                                after.format_move(result.info.pv[1], active.chess960)
+                                after.format_move(reply, active.chess960)
                             ));
                         }
                     }
@@ -198,6 +207,7 @@ impl Engine {
                     ),
                 )?;
                 write_line(out, "option name UCI_AnalyseMode type check default false")?;
+                write_line(out, "option name Ponder type check default false")?;
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "option name SyzygyPath type string default <empty>")?;
@@ -424,6 +434,10 @@ impl Engine {
         } else if name == "uci_analysemode" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.analyse_mode = enabled;
+            }
+        } else if name == "ponder" {
+            if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
+                self.ponder = enabled;
             }
         } else if name == "uci_showwdl" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {

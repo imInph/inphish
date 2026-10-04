@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
-use inphzugzwang_core::Move;
+use inphzugzwang_core::{Move, Position};
 
 use crate::{is_decisive, Memory, DEPTH_NONE};
 
@@ -192,6 +192,13 @@ impl TranspositionTable {
             })
             .count();
         (occupied * 1000 / (sample * ENTRIES_PER_CLUSTER)) as u16
+    }
+
+    /// A legal predicted reply when the principal variation ends after our move.
+    pub fn ponder_move(&self, position: &Position) -> Option<Move> {
+        self.probe(crate::table_key(position))
+            .map(|record| record.mv)
+            .filter(|&mv| mv != Move::NULL && position.is_legal(mv))
     }
 
     /// Statistics kept from an earlier search, or new ones.

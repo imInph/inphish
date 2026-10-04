@@ -482,16 +482,12 @@ pub fn search_with_table(
                 let _ = helper.join();
             }
             tt.keep_memory(worker.memory);
+            wait_for_command(limits, control);
             return Result { best: None, info };
         }
         worker.iterative_deepening(&mut report);
         // Wait for "stop" or "ponderhit" when pondering or searching infinitely.
-        while !worker.control.stop.load(Ordering::Relaxed)
-            && (limits.infinite
-                || (limits.ponder && !worker.control.ponderhit.load(Ordering::Relaxed)))
-        {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        wait_for_command(limits, control);
         shared.stop.store(true, Ordering::Relaxed);
         let mut finished = vec![Finished {
             root_moves: worker.root_moves.clone(),
@@ -537,6 +533,14 @@ pub fn search_with_table(
             info,
         }
     })
+}
+
+fn wait_for_command(limits: &Limits, control: &Control) {
+    while !control.stop.load(Ordering::Relaxed)
+        && (limits.infinite || (limits.ponder && !control.ponderhit.load(Ordering::Relaxed)))
+    {
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Stockfish's thread vote: each thread votes for its best move with the score above the

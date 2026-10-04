@@ -47,6 +47,15 @@ impl Engine {
         }
         panic!("expected {prefix}");
     }
+
+    fn no_bestmove(&self, duration: Duration) {
+        let deadline = std::time::Instant::now() + duration;
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            if let Ok(line) = self.lines.recv_timeout(left) {
+                assert!(!line.starts_with("bestmove"), "search ended early: {line}");
+            }
+        }
+    }
 }
 
 impl Drop for Engine {
@@ -122,18 +131,71 @@ fn uci_edge_cases() {
     assert_ne!(engine.until("bestmove "), "bestmove 0000");
 
     engine.send("go ponder wtime 1000 btime 1000");
-    let deadline = std::time::Instant::now() + Duration::from_millis(300);
-    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
-        if let Ok(line) = engine.lines.recv_timeout(left) {
-            assert!(!line.starts_with("bestmove"), "ponder ended early: {line}");
-        }
-    }
+    engine.no_bestmove(Duration::from_millis(300));
     engine.send("ponderhit");
     assert_ne!(engine.until("bestmove "), "bestmove 0000");
 
     engine.send("go infinite");
     engine.send("quit");
     assert!(engine.until("bestmove ").starts_with("bestmove "));
+    assert!(engine.child.wait().unwrap().success());
+}
+
+#[test]
+fn uci_ponder_lifecycle() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name Ponder"),
+        "option name Ponder type check default false"
+    );
+    engine.until("uciok");
+    engine.send("go depth 4");
+    assert!(!engine.until("bestmove ").contains(" ponder "));
+    engine.send("setoption name Ponder value true");
+    engine.send("setoption name Clear Hash");
+    engine.send("go depth 4");
+    let best = engine.until("bestmove ");
+    let words: Vec<_> = best.split_whitespace().collect();
+    assert_eq!(words.len(), 4, "{best}");
+    assert_eq!(words[2], "ponder");
+    let mut position = inphzugzwang_core::Position::startpos();
+    for word in [words[1], words[3]] {
+        let mv = position
+            .parse_move(word, false)
+            .expect("legal predicted line");
+        position.make(mv);
+    }
+    engine.send(&format!(
+        "position startpos moves {} {}",
+        words[1], words[3]
+    ));
+    // Even a completed depth-limited search must wait for the prediction to be confirmed.
+    engine.send("go ponder depth 2 wtime 1000 btime 1000");
+    engine.until("info depth 2");
+    engine.no_bestmove(Duration::from_millis(100));
+    engine.send("ponderhit");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+    // A missed prediction is stopped, then the GUI supplies the actual position.
+    engine.send("go ponder wtime 1000 btime 1000");
+    engine.until("info depth 1");
+    engine.send("stop");
+    engine.until("bestmove ");
+    engine.send("position startpos moves d2d4");
+    engine.send("go depth 2");
+    assert_ne!(engine.until("bestmove "), "bestmove 0000");
+    // Terminal positions obey the same command lifecycle.
+    engine.send("position fen 7k/6Q1/5K2/8/8/8/8/8 b - - 0 1");
+    engine.send("go ponder");
+    engine.until("info depth 0");
+    engine.no_bestmove(Duration::from_millis(100));
+    engine.send("ponderhit");
+    assert_eq!(engine.until("bestmove "), "bestmove 0000");
+    engine.send("go infinite");
+    engine.until("info depth 0");
+    engine.no_bestmove(Duration::from_millis(100));
+    engine.send("quit");
+    assert_eq!(engine.until("bestmove "), "bestmove 0000");
     assert!(engine.child.wait().unwrap().success());
 }
 
