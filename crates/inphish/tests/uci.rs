@@ -200,6 +200,73 @@ fn uci_ponder_lifecycle() {
 }
 
 #[test]
+fn uci_evalfile() {
+    let mut engine = Engine::spawn();
+    engine.send("uci");
+    assert_eq!(
+        engine.until("option name EvalFile"),
+        "option name EvalFile type string default <empty>"
+    );
+    engine.until("uciok");
+    engine.send("go depth 1");
+    let baseline = engine.until("info depth 1");
+    engine.until("bestmove ");
+    let score = |line: &str| {
+        let words: Vec<_> = line.split_whitespace().collect();
+        let index = words.iter().position(|&word| word == "cp").unwrap();
+        words[index + 1].parse::<i32>().unwrap()
+    };
+    let path = std::env::temp_dir().join(format!("inphish network {}.nnue", std::process::id()));
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../inphzugzwang-nnue/net/nn-252f33942263.nnue");
+    let mut bytes = std::fs::read(source).unwrap();
+    // Change the final layer stack's output bias, used in positions with 29-32 pieces.
+    let bias = bytes.len() - 132;
+    let value = i32::from_le_bytes(bytes[bias..bias + 4].try_into().unwrap()) + 1600;
+    bytes[bias..bias + 4].copy_from_slice(&value.to_le_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    engine.send("go infinite");
+    engine.until("info depth 1");
+    engine.send(&format!("setoption name EvalFile value {}", path.display()));
+    assert!(engine
+        .until("info string loaded SFNNv17 network")
+        .ends_with(&path.display().to_string()));
+    engine.send("isready");
+    engine.until("readyok");
+    // Loading new weights does not terminate a search using the previous network.
+    engine.no_bestmove(Duration::from_millis(50));
+    engine.send("stop");
+    engine.until("bestmove ");
+    engine.send("go depth 1");
+    let external = engine.until("info depth 1");
+    engine.until("bestmove ");
+    assert_ne!(score(&external), score(&baseline));
+    // A failed replacement leaves the external network selected.
+    bytes[4] ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    engine.send(&format!("setoption name EvalFile value {}", path.display()));
+    assert!(engine
+        .until("info string network not loaded")
+        .contains("unsupported network architecture"));
+    engine.send("setoption name Clear Hash");
+    engine.send("go depth 1");
+    assert_eq!(score(&engine.until("info depth 1")), score(&external));
+    engine.until("bestmove ");
+    engine.send("setoption name EvalFile value /nonexistent/network.nnue");
+    assert!(engine
+        .until("info string network not loaded")
+        .contains("keeping previous network"));
+    engine.send("setoption name EvalFile value <empty>");
+    engine.until("info string using bundled SFNNv17 network");
+    engine.send("go depth 1");
+    assert_eq!(score(&engine.until("info depth 1")), score(&baseline));
+    engine.until("bestmove ");
+    engine.send("quit");
+    assert!(engine.child.wait().unwrap().success());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn uci_chess960_castling() {
     let mut engine = Engine::spawn();
     engine.send("uci");

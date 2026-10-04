@@ -120,6 +120,7 @@ pub struct Limits {
     /// internal units; zero scores draws as even, as Stockfish does.
     pub contempt: i32,
     pub tablebases: Option<Arc<Tablebases>>,
+    pub network: Option<Arc<inphzugzwang_nnue::Network>>,
     pub immediate: bool,
     pub started: Option<Instant>,
 }
@@ -809,6 +810,12 @@ impl<'a> Worker<'a> {
     ) -> Self {
         let started = limits.started.unwrap_or_else(Instant::now);
         let mut memory = tt.take_memory();
+        memory.accumulators.set_network(
+            limits
+                .network
+                .clone()
+                .unwrap_or_else(inphzugzwang_nnue::shared_network),
+        );
         memory.accumulators.reset(&position);
         let reductions = (0..MAX_MOVES)
             .map(|index| {

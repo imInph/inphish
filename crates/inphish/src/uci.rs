@@ -31,6 +31,7 @@ struct Active {
     handle: JoinHandle<()>,
     position: Position,
     chess960: bool,
+    hash: Arc<TranspositionTable>,
 }
 
 struct Engine {
@@ -42,6 +43,7 @@ struct Engine {
     overhead: u64,
     hash_mb: u32,
     hash: Arc<TranspositionTable>,
+    network: Arc<inphzugzwang_nnue::Network>,
     multipv: usize,
     threads: usize,
     limit_strength: bool,
@@ -89,6 +91,7 @@ pub fn run() -> io::Result<()> {
         overhead: 10,
         hash_mb: 16,
         hash: Arc::new(TranspositionTable::new(16).expect("default hash allocation failed")),
+        network: inphzugzwang_nnue::shared_network(),
         multipv: 1,
         threads: 1,
         limit_strength: false,
@@ -147,7 +150,7 @@ pub fn run() -> io::Result<()> {
                             .get(1)
                             .copied()
                             .filter(|&mv| after.is_legal(mv))
-                            .or_else(|| engine.hash.ponder_move(&after))
+                            .or_else(|| active.hash.ponder_move(&after))
                         {
                             line.push_str(&format!(
                                 " ponder {}",
@@ -208,6 +211,7 @@ impl Engine {
                 )?;
                 write_line(out, "option name UCI_AnalyseMode type check default false")?;
                 write_line(out, "option name Ponder type check default false")?;
+                write_line(out, "option name EvalFile type string default <empty>")?;
                 write_line(out, "option name UCI_ShowWDL type check default false")?;
                 write_line(out, "option name UCI_Chess960 type check default false")?;
                 write_line(out, "option name SyzygyPath type string default <empty>")?;
@@ -245,6 +249,7 @@ impl Engine {
                     limits.contempt = self.contempt * 208 / 100;
                 }
                 limits.tablebases = self.tablebases.clone();
+                limits.network = Some(self.network.clone());
                 if self.active.is_some() {
                     self.stop();
                     self.pending = Some(limits);
@@ -302,6 +307,7 @@ impl Engine {
                 searchmoves: limits.searchmoves.clone(),
                 searchmoves_only: limits.searchmoves_only,
                 tablebases: self.tablebases.clone(),
+                network: limits.network.clone(),
                 started: limits.started,
                 ..Limits::default()
             };
@@ -336,6 +342,7 @@ impl Engine {
         };
         let worker_tx = tx.clone();
         let hash = self.hash.clone();
+        let active_hash = hash.clone();
         let handle = thread::Builder::new()
             .name("inphish-search".to_owned())
             .stack_size(16 * 1024 * 1024)
@@ -352,6 +359,7 @@ impl Engine {
             handle,
             position: active_position,
             chess960: self.chess960,
+            hash: active_hash,
         });
         Ok(())
     }
@@ -439,6 +447,27 @@ impl Engine {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.ponder = enabled;
             }
+        } else if name == "evalfile" {
+            let path = value_at.map_or(String::new(), |index| words[index + 1..].join(" "));
+            let loaded = if path.is_empty() || path == "<empty>" {
+                Ok(inphzugzwang_nnue::shared_network())
+            } else {
+                inphzugzwang_nnue::Network::load(&path).map(Arc::new)
+            };
+            return Some(match loaded {
+                Ok(network) => {
+                    self.network = network;
+                    self.clear_hash();
+                    if path.is_empty() || path == "<empty>" {
+                        "info string using bundled SFNNv17 network".to_owned()
+                    } else {
+                        format!("info string loaded SFNNv17 network {path}")
+                    }
+                }
+                Err(error) => {
+                    format!("info string network not loaded: {error}; keeping previous network")
+                }
+            });
         } else if name == "uci_showwdl" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.show_wdl = enabled;

@@ -5,7 +5,7 @@
 //! for any position the value equals what it computes with the same network.
 
 use std::mem::MaybeUninit;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use inphzugzwang_core::{
     between, bishop_attacks, king_attacks, knight_attacks, pawn_attacks, rook_attacks, Bitboard,
@@ -29,6 +29,9 @@ const FC1_INPUTS: usize = 2 * FC0_OUTPUTS;
 const FC1_OUTPUTS: usize = 32;
 const FC2_INPUTS: usize = FC1_INPUTS + 2 * FC1_OUTPUTS;
 const VERSION: u32 = 0x6A44_8AFA;
+const NETWORK_HASH: u32 = 0xA85B_2205;
+const TRANSFORMER_HASH: u32 = 0xCB68_5313;
+const STACK_HASH: u32 = 0x6333_7116;
 const WEIGHT_SCALE_BITS: u32 = 6;
 const OUTPUT_SCALE: i32 = 16;
 /// Upper bound of simultaneously active threat or pawn-pair features, as in Stockfish.
@@ -586,8 +589,12 @@ struct CacheEntry {
 
 impl RefreshCache {
     pub fn new() -> Self {
+        Self::for_network(network())
+    }
+
+    fn for_network(network: &Network) -> Self {
         let empty = CacheEntry {
-            values: network().feature_bias[..].try_into().expect("bias width"),
+            values: network.feature_bias[..].try_into().expect("bias width"),
             pieces: [[Bitboard::EMPTY; 6]; 2],
         };
         Self {
@@ -689,6 +696,7 @@ impl Changes {
 /// by a refresh of the current position from which the earlier ones are then derived
 /// backwards. A null move leaves the stack alone, since the pieces stay where they are.
 pub struct AccumulatorStack {
+    network: Arc<Network>,
     entries: Box<[StackEntry]>,
     size: usize,
     cache: RefreshCache,
@@ -705,6 +713,7 @@ struct StackEntry {
 impl AccumulatorStack {
     pub fn new() -> Self {
         Self {
+            network: shared_network(),
             entries: (0..STACK_DEPTH)
                 .map(|_| StackEntry {
                     accumulator: Accumulator::default(),
@@ -721,6 +730,7 @@ impl AccumulatorStack {
     /// A stack of no size, standing in for one handed back.
     pub fn empty() -> Self {
         Self {
+            network: shared_network(),
             entries: Box::default(),
             size: 0,
             cache: RefreshCache {
@@ -730,12 +740,21 @@ impl AccumulatorStack {
         }
     }
 
+    /// Changes the weights and discards their cached sums; call `reset` before searching.
+    pub fn set_network(&mut self, network: Arc<Network>) {
+        if !Arc::ptr_eq(&self.network, &network) {
+            self.cache = RefreshCache::for_network(&network);
+            self.network = network;
+            self.size = 0;
+        }
+    }
+
     /// Starts over from `position`.
     pub fn reset(&mut self, position: &Position) {
         let root = &mut self.entries[0];
         for perspective in [Color::White, Color::Black] {
             let side = perspective.index();
-            network().refresh_cached(
+            self.network.refresh_cached(
                 position,
                 perspective,
                 &mut root.accumulator.values[side],
@@ -771,8 +790,9 @@ impl AccumulatorStack {
     }
 
     pub fn evaluate(&mut self, position: &Position) -> Output {
-        let accumulator = self.current(position);
-        network().evaluate(accumulator, position)
+        self.current(position);
+        self.network
+            .evaluate(&self.entries[self.size - 1].accumulator, position)
     }
 
     fn update(&mut self, position: &Position, perspective: Color) {
@@ -791,11 +811,19 @@ impl AccumulatorStack {
         while !self.entries[last].computed[side] && !refreshes(&self.entries[last].dirty) {
             last -= 1;
         }
-        let network = network();
+        let network = &self.network;
         let king = position.king(perspective);
         if self.entries[last].computed[side] {
             for next in last + 1..=top {
-                self.step(network, next - 1, next, perspective, king);
+                Self::step(
+                    &mut self.entries,
+                    &mut self.changes,
+                    network,
+                    next - 1,
+                    next,
+                    perspective,
+                    king,
+                );
             }
             return;
         }
@@ -818,13 +846,22 @@ impl AccumulatorStack {
         }
         entry.computed[side] = true;
         for next in (last..top).rev() {
-            self.step(network, next + 1, next, perspective, king);
+            Self::step(
+                &mut self.entries,
+                &mut self.changes,
+                network,
+                next + 1,
+                next,
+                perspective,
+                king,
+            );
         }
     }
 
     /// Derives entry `to` from the adjacent entry `from` for one perspective.
     fn step(
-        &mut self,
+        entries: &mut [StackEntry],
+        changes: &mut Changes,
         network: &Network,
         from: usize,
         to: usize,
@@ -834,19 +871,18 @@ impl AccumulatorStack {
         let side = perspective.index();
         let forward = to > from;
         let (parent, child) = if forward {
-            let (earlier, later) = self.entries.split_at_mut(to);
+            let (earlier, later) = entries.split_at_mut(to);
             (&earlier[from], &mut later[0])
         } else {
-            let (earlier, later) = self.entries.split_at_mut(from);
+            let (earlier, later) = entries.split_at_mut(from);
             (&later[0], &mut earlier[to])
         };
         let record = if forward { &child.dirty } else { &parent.dirty };
-        self.changes
-            .fill(record, perspective, king, true, &network.extra_weights);
+        changes.fill(record, perspective, king, true, &network.extra_weights);
         network.apply_changes(
             &parent.accumulator.values[side],
             &mut child.accumulator.values[side],
-            &self.changes,
+            changes,
             forward,
         );
         child.computed[side] = true;
@@ -861,8 +897,17 @@ impl Default for AccumulatorStack {
 
 /// The bundled network, parsed on first use.
 pub fn network() -> &'static Network {
-    static NETWORK: OnceLock<Network> = OnceLock::new();
-    NETWORK.get_or_init(|| Network::parse(NET).expect("bundled network is valid"))
+    bundled_network()
+}
+
+/// Shared ownership of the bundled network, for searches that can select other weights.
+pub fn shared_network() -> Arc<Network> {
+    bundled_network().clone()
+}
+
+fn bundled_network() -> &'static Arc<Network> {
+    static NETWORK: OnceLock<Arc<Network>> = OnceLock::new();
+    NETWORK.get_or_init(|| Arc::new(Network::parse(NET).expect("bundled network is valid")))
 }
 
 struct Reader<'a> {
@@ -903,26 +948,33 @@ impl Reader<'_> {
         Ok(self.take(count)?.iter().map(|&byte| byte as i8).collect())
     }
 
-    /// A block of `count` signed LEB128 values behind Stockfish's magic string and byte
-    /// length, each narrowed to `T` as Stockfish stores it.
-    fn leb128<T>(&mut self, count: usize, narrow: fn(i32) -> T) -> Result<Box<[T]>, &'static str> {
+    /// A block of `count` signed 16-bit LEB128 values behind Stockfish's magic string.
+    fn leb128(&mut self, count: usize) -> Result<Box<[i16]>, &'static str> {
         if self.take(17)? != b"COMPRESSED_LEB128" {
             return Err("network block is not LEB128 compressed");
         }
         let length = self.u32()? as usize;
+        if !(count..=3 * count).contains(&length) {
+            return Err("network block has the wrong length");
+        }
         let bytes = self.take(length)?;
         let mut values = Vec::with_capacity(count);
         let (mut result, mut shift) = (0_u32, 0_u32);
         for &byte in bytes {
-            result |= u32::from(byte & 0x7f) << (shift % 32);
+            if shift >= 21 || values.len() == count {
+                return Err("network block has invalid values");
+            }
+            result |= u32::from(byte & 0x7f) << shift;
             shift += 7;
             if byte & 0x80 == 0 {
-                let value = if shift >= 32 || byte & 0x40 == 0 {
+                let value = if byte & 0x40 == 0 {
                     result
                 } else {
                     result | !((1_u32 << shift) - 1)
                 };
-                values.push(narrow(value as i32));
+                values.push(
+                    i16::try_from(value as i32).map_err(|_| "network weight is out of range")?,
+                );
                 (result, shift) = (0, 0);
             }
         }
@@ -934,6 +986,27 @@ impl Reader<'_> {
 }
 
 impl Network {
+    /// Loads only the supported architecture, bounding the file before allocating weights.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        use std::io::Read;
+        const MAX_BYTES: u64 = (EXTRA_INPUTS * HALF
+            + (PSQ_INPUTS * HALF + HALF) * 3
+            + LAYER_STACKS * (FC0_OUTPUTS * HALF + FC1_OUTPUTS * FC1_INPUTS + 512)
+            + 8192) as u64;
+        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        if file.metadata().map_err(|error| error.to_string())?.len() > MAX_BYTES {
+            return Err("network file is too large for SFNNv17".to_owned());
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err("network file is too large for SFNNv17".to_owned());
+        }
+        Self::parse(&bytes).map_err(str::to_owned)
+    }
+
     /// Reads the file format of the development build, Stockfish 19's without the
     /// piece-square output: a version, a hash and a description, then the feature
     /// transformer and eight layer stacks, each behind its own hash.
@@ -942,17 +1015,26 @@ impl Network {
         if reader.u32()? != VERSION {
             return Err("unsupported network version");
         }
-        reader.u32()?;
+        if reader.u32()? != NETWORK_HASH {
+            return Err("unsupported network architecture (expected SFNNv17)");
+        }
         let description = reader.u32()? as usize;
+        if description > 4096 {
+            return Err("network description is too long");
+        }
         reader.take(description)?;
-        reader.u32()?;
-        let feature_bias = reader.leb128(HALF, |value| value as i16)?;
+        if reader.u32()? != TRANSFORMER_HASH {
+            return Err("unsupported network feature transformer");
+        }
+        let feature_bias = reader.leb128(HALF)?;
         let threat_weights = reader.i8s(THREAT_INPUTS * HALF)?;
         let pair_weights = reader.i8s(PAIR_INPUTS * HALF)?;
-        let feature_weights = reader.leb128(PSQ_INPUTS * HALF, |value| value as i16)?;
+        let feature_weights = reader.leb128(PSQ_INPUTS * HALF)?;
         let mut stacks = Vec::with_capacity(LAYER_STACKS);
         for _ in 0..LAYER_STACKS {
-            reader.u32()?;
+            if reader.u32()? != STACK_HASH {
+                return Err("unsupported network layer stack");
+            }
             let fc0_bias = reader.i32_array::<FC0_OUTPUTS>()?;
             let rows = reader.i8s(FC0_OUTPUTS * HALF)?;
             let fc0_weights = (0..FC0_OUTPUTS * HALF)
@@ -1788,6 +1870,42 @@ mod tests {
         assert!(checked > 10_000, "{checked}");
     }
     use super::*;
+
+    #[test]
+    fn changing_network_discards_cached_sums() {
+        let mut external = Network::parse(NET).unwrap();
+        external.feature_bias[0] = external.feature_bias[0].wrapping_add(100);
+        let external = Arc::new(external);
+        let mut stack = AccumulatorStack::new();
+        let position = Position::startpos();
+        stack.reset(&position);
+        let before = stack.current(&position).clone();
+        stack.set_network(external.clone());
+        stack.reset(&position);
+        assert!(stack.current(&position).values == external.fresh(&position).values);
+        assert!(stack.current(&position).values != before.values);
+        stack.set_network(shared_network());
+        stack.reset(&position);
+        assert!(stack.current(&position).values == before.values);
+    }
+
+    #[test]
+    fn compressed_weights_reject_overflow_and_extra_values() {
+        let read = |values: &[u8], count| {
+            let mut bytes = b"COMPRESSED_LEB128".to_vec();
+            bytes.extend((values.len() as u32).to_le_bytes());
+            bytes.extend(values);
+            Reader { bytes: &bytes }.leb128(count)
+        };
+        assert_eq!(
+            &*read(&[0, 0x7f, 0xff, 0xff, 1], 3).unwrap(),
+            &[0, -1, 32767]
+        );
+        assert!(read(&[0x80, 0x80, 2], 1).is_err());
+        assert!(read(&[0x80, 0x80, 0x80], 1).is_err());
+        assert!(read(&[0, 0], 1).is_err());
+        assert!(read(&[0x80], 1).is_err());
+    }
 
     #[test]
     fn sparse_first_layer_matches_dense() {

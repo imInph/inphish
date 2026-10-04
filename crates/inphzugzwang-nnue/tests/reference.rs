@@ -6,6 +6,10 @@ const REFERENCE: &str = include_str!("../../../tests/nnue/reference.txt");
 #[test]
 fn matches_stockfish_dev_exactly() {
     let network = network();
+    check_reference(network);
+}
+
+fn check_reference(network: &Network) {
     let mut count = 0;
     for line in REFERENCE.lines().filter(|line| !line.starts_with('#')) {
         let fields: Vec<&str> = line.split('|').collect();
@@ -32,6 +36,13 @@ fn matches_stockfish_dev_exactly() {
 }
 
 #[test]
+fn external_network_matches_reference() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("net/nn-252f33942263.nnue");
+    let network = Network::load(path).unwrap();
+    check_reference(&network);
+}
+
+#[test]
 fn rejects_damaged_files() {
     let bytes = include_bytes!("../net/nn-252f33942263.nnue");
     assert!(Network::parse(&bytes[..bytes.len() - 1]).is_err());
@@ -41,6 +52,17 @@ fn rejects_damaged_files() {
     let mut version = bytes.to_vec();
     version[0] ^= 1;
     assert!(Network::parse(&version).is_err());
+    version[0] ^= 1;
+    let word = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+    let transformer = 12 + word(8);
+    let bias = transformer + 4;
+    let psq = bias + 21 + word(bias + 17) + (59_808 + 4560) * 1024;
+    let stack = psq + 21 + word(psq + 17);
+    for offset in [4, transformer, stack] {
+        version[offset] ^= 1;
+        assert!(Network::parse(&version).is_err(), "hash at {offset}");
+        version[offset] ^= 1;
+    }
 }
 
 /// Walks every line to a fixed depth with the accumulator stack, as the search makes and
