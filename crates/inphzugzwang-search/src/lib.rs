@@ -2487,11 +2487,12 @@ fn corrected(value: i32, correction: i32) -> i32 {
 
 /// Win, draw and loss chances in permille for the side to move, from a centipawn score.
 /// The logistic model `win = 1 / (1 + exp((a - score) / b))`, with loss mirrored, was
-/// fitted by maximum likelihood to inphish self-play evaluations at 1+0.01, so it is only
-/// an estimate.
+/// fitted by maximum likelihood to SFNNv17 evaluations from 120 games against nearby,
+/// unweakened opponents at 1+0.01, weighting games equally and checking held-out openings.
+/// It estimates this network at that control, rather than arbitrary external networks.
 pub fn wdl(score: i32) -> (u16, u16, u16) {
-    const A: f64 = 714.0;
-    const B: f64 = 290.0;
+    const A: f64 = 152.0;
+    const B: f64 = 48.0;
     if is_win(score) {
         return (1000, 0, 0);
     }
