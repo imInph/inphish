@@ -32,7 +32,7 @@ cargo test --release -p inphish --test bench
 target/release/inphish bench
 ```
 
-The bench searches at depth 13 by default, and its signature is `1457280` nodes. It must match in debug and release builds and on supported platforms.
+The bench searches at depth 13 by default, and its signature is `1525540` nodes. It must match in debug and release builds and on supported platforms.
 
 The first search SPRT compared PVS with the preceding alpha-beta revision at 8+0.08, one thread per engine, without a hash table. It accepted H1 on [0, 5] Elo after 988 paired-opening games: 549 wins, 364 losses, 75 draws, LLR 2.96 against ±2.94 bounds. The estimated gain was 65.83 ± 18.56 Elo (95%). All 988 games terminated normally. This measures the change, not an absolute rating.
 
@@ -306,3 +306,52 @@ tools/sprt.sh HEAD HEAD^ /path/to/openings.epd /tmp/inphish-sprt.pgn
 ```
 
 The default test uses 8+0.08 seconds, one search thread per engine, a 0 to 5 Elo SPRT, and four concurrent games. `SPRT_TC`, `SPRT_ROUNDS`, `SPRT_CONCURRENCY`, `SPRT_ELO0`, `SPRT_ELO1`, and `SPRT_FASTCHESS` override the defaults. Use `SPRT_ELO0=-5 SPRT_ELO1=0` for a non-regression test. Keep the fastchess terminal output and PGN with the result. If the test reaches a decision, record the LLR, bounds, W/L/D counts, time control, and bench signature; otherwise label the result inconclusive.
+
+
+## 7.0: stable candidate
+
+The two pre-releases introduced SFNNv17 (`nn-252f33942263`) and Stockfish development build `49ea5ded`'s evaluation formula, then full UCI pondering, compatible external weights through `EvalFile`, builds without the bundled book, and refitted WDL estimates. The default search remains 6.2's. Bench signature: `1525540`. Bundled and external network-loading paths match the 2,253 reference positions exactly; incremental updates are also compared with fresh evaluation. The UCI tests exercise hit and missed predictions, completed and terminal ponder searches, external network swaps during active and queued searches, failed loads, and restoration of the bundled weights.
+
+The pre.2 regression check on `f0d6a93` scored 23/40 against pre.1 (10 W / 4 L / 26 D), all normal endings. An accumulator prefetch experiment was removed: four alternating trials at Hash 64, one thread and ten seconds per position on two positions averaged 844,070 nodes per second before it and 842,560 with it, with no repeatable gain.
+
+Local formatting, strict linting and the full release test suite pass on the candidate. The build without the bundled book passes its lint, unit, UCI and bench checks too. The 3–5 piece Syzygy reference test passes with the local tables. The WDL fitting tool's three tests pass. The standard binary is restored after checking the smaller build.
+
+### Strength limiting
+
+Baseline `8581e44`, both engines limited to the stated Elo against Stockfish 19: 20 games per point at 1+0.01, Hash 16 MiB, one thread, concurrency 2, first ten balanced openings with colours swapped.
+
+| Setting | Wins | Losses | Draws | Points |
+|---|---|---|---|---|
+| 1320 | 11 | 9 | 0 | 11/20 |
+| 2200 | 5 | 13 | 2 | 6/20 |
+| 3000 | 11 | 3 | 6 | 14/20 |
+
+The 1320 budget stays unchanged. The base-2 node budget at 2200 rises from 10.15 to 10.6, and at 3000 falls from 13.1 to 12.7. On `d50ec0f`, separate validation used balanced openings 11–20, again paired: 2200 scored 8/20 (8 W / 12 L / 0 D), and 3000 scored 11.5/20 (8 W / 5 L / 7 D). All 100 calibration games ended normally. Different openings and random move weakening mean these samples do not isolate a causal improvement; the settings remain approximate labels at this short control. The intermediate points, not newly tested, retain 1600 at 8.2, 2600 at 11.0 and 2800 at 12.6; 1320 remains 6.7. No full-strength search rule changed.
+
+### WDL validation
+
+The bundled-network model uses A = 152 and B = 48, fitted to 1,742 sparse evaluations from 120 games against nearby, unweakened opponents, with equal weight per game. Opening groups, including both colours, stay together in a deterministic split. A training-only fit (A = 158, B = 46, 96 games) reduced log loss on 24 held-out games from 0.677 to 0.534 relative to the old A = 714, B = 290 model. The final model reduced log loss on pre.2's 40 new regression games from 0.596 to 0.342, without fitting to them.
+
+On the stable candidate's 80 new games against 6.2.0, full-strength Stockfish and Mai v3, the fixed model reduced log loss from 0.554 to 0.339 across 1,131 sparse evaluations. These are new games, with openings overlapping earlier data; they are not an independent holdout of openings. No refit was made. WDL is approximate, specific to the bundled network at 1+0.01, and not calibrated for arbitrary `EvalFile` weights.
+
+### Release comparisons
+
+Frozen revision `d50ec0f`, 1+0.01, Hash 16 MiB, one thread, books off, concurrency 2, balanced paired openings (the Chess960 opening set for that match). Each batch contained at most 40 games and had a 20-minute wall-clock cap.
+
+| Opponent | Games | Wins | Losses | Draws | Points |
+|---|---|---|---|---|---|
+| inphish 6.2.0 | 40 | 6 | 4 | 30 | 21 |
+| Stockfish 19, full strength | 20 | 3 | 2 | 15 | 10.5 |
+| Stockfish 19, UCI_Elo 2800, Chess960 | 20 | 20 | 0 | 0 | 20 |
+| Mai v3, network by path, Hash 16 | 20 | 9 | 2 | 9 | 13.5 |
+| Morstilia 7.0.0, BookEnabled=false | 20 | 20 | 0 | 0 | 20 |
+
+All 120 release games ended normally, with no crashes, illegal moves or time forfeits. Both Chess960 and Morstilia matches ended entirely in checkmate. These are small regression comparisons, not measured Elo gains. No new unrestricted-strength ladder rating is claimed.
+
+Evidence labels (PGNs and logs are kept outside the repository):
+
+- `20261004-150007-d50ec0f-vs-inphish-6.2.0-v7release-1_0.01`
+- `20261004-150059-d50ec0f-vs-SF19-full-v7release-1_0.01`
+- `20261004-150127-d50ec0f-vs-SF19-960-elo2800-v7release-1_0.01`
+- `20261004-150153-d50ec0f-vs-MaiV3-h16-v7release-1_0.01`
+- `20261004-150229-d50ec0f-vs-Morstilia-7-v7release-1_0.01`

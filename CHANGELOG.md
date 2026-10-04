@@ -1,5 +1,16 @@
 # inphzugzwang changelog
 
+## 7.0.0 - Unreleased — Open Water
+
+- SFNNv17 network `nn-252f33942263` and the evaluation formula from Stockfish development build `49ea5ded`, replacing Stockfish 19's separate piece-square output. Bundled and external loading match the reference exactly on 2,253 positions. The default search remains 6.2's; bench signature: 1525540.
+- Complete UCI pondering with `Ponder`, predicted replies, `ponderhit`, and correct waits for completed and terminal searches.
+- `EvalFile` loads compatible SFNNv17 weights. Empty or `<empty>` restores bundled weights; failed loads keep the previous network. Running and queued searches keep their original weights and transposition tables.
+- Optional `bundled-book` feature, enabled by default. `cargo build --release -p inphish --no-default-features` omits the bundled Polyglot book while retaining external `BookFile` support: about 100 MB instead of 203 MB locally. Release downloads keep the book.
+- WDL refitted for the bundled network at 1+0.01 (A = 152, B = 48). A training-only fit reduced held-out log loss from 0.677 to 0.534; the fixed final model reduced it from 0.554 to 0.339 on 80 new stable-candidate peer games, without refitting. External networks are not calibrated.
+- Limited-strength node budgets adjusted at 2200 and 3000 after matching-setting checks against Stockfish 19. Separate validation scored 8/20 at 2200 and 11.5/20 at 3000; 1320 kept its budget after 11/20. Small samples at one fast control, not precise ratings.
+- Frozen candidate `d50ec0f`, 1+0.01, Hash 16, one thread, books off, paired openings: 21/40 against 6.2.0 (6 W / 4 L / 30 D); 10.5/20 against Stockfish 19 at full strength (3 W / 2 L / 15 D); 20/20 in Chess960 against Stockfish at 2800; 13.5/20 against Mai v3 (9 W / 2 L / 9 D); 20/20 against Morstilia 7.0.0. All games ended normally. No measured strength gain is claimed.
+- CI coverage for builds without the bundled book and the WDL fitting tool. Main README figures and documentation updated; pre-release history preserved.
+
 ## 6.2.0 - 2026-10-01
 
 - Search changes from Stockfish's development build `dev-20260930-49ea5ded`, which follows Stockfish 19, each of which gained in Stockfish's own tests: null-move pruning comes easier after earlier null-move fail highs from the same ply; razoring applies only at expected all-nodes, with a margin linear in depth, and not while searching for mate; the search for mate starts from a root score that falls with depth, 750 + 220000 / depth², instead of 2000 from depth 16; after an aspiration fail high the depth returns to full over the next iterations instead of at once; correction history also uses the move six plies back.
