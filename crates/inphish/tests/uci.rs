@@ -256,8 +256,25 @@ fn uci_evalfile() {
     assert!(engine
         .until("info string network not loaded")
         .contains("keeping previous network"));
-    engine.send("setoption name EvalFile value <empty>");
-    engine.until("info string using bundled SFNNv17 network");
+    // Queue a search using external weights, then restore the bundled network before
+    // that search finishes. Its table must not contaminate the restored network's table.
+    engine.send("go infinite");
+    engine.until("info depth 1");
+    engine.send("setoption name Clear Hash\ngo depth 1\nsetoption name EvalFile value <empty>");
+    let mut finished = 0;
+    let mut restored = false;
+    let mut queued_score = None;
+    while finished < 2 || !restored {
+        let line = engine.lines.recv_timeout(Duration::from_secs(10)).unwrap();
+        if line.starts_with("bestmove ") {
+            finished += 1;
+        } else if line.starts_with("info string using bundled SFNNv17 network") {
+            restored = true;
+        } else if line.starts_with("info depth 1 ") {
+            queued_score = Some(score(&line));
+        }
+    }
+    assert_eq!(queued_score, Some(score(&external)));
     engine.send("go depth 1");
     assert_eq!(score(&engine.until("info depth 1")), score(&baseline));
     engine.until("bestmove ");

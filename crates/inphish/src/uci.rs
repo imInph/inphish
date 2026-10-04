@@ -38,7 +38,7 @@ struct Engine {
     position: Position,
     active: Option<Active>,
     next_id: u64,
-    pending: Option<Limits>,
+    pending: Option<(Limits, Arc<TranspositionTable>)>,
     quitting: bool,
     overhead: u64,
     hash_mb: u32,
@@ -160,9 +160,9 @@ pub fn run() -> io::Result<()> {
                     }
                     write_line(&mut output, &line)?;
                     if !engine.quitting {
-                        if let Some(mut limits) = engine.pending.take() {
+                        if let Some((mut limits, hash)) = engine.pending.take() {
                             limits.started = Some(Instant::now());
-                            engine.start(limits, &tx, &mut output)?;
+                            engine.start(limits, hash, &tx, &mut output)?;
                         }
                     }
                 }
@@ -252,13 +252,13 @@ impl Engine {
                 limits.network = Some(self.network.clone());
                 if self.active.is_some() {
                     self.stop();
-                    self.pending = Some(limits);
+                    self.pending = Some((limits, self.hash.clone()));
                 } else if let Some(mv) = self.book_move(&limits) {
                     let text = self.position.format_move(mv, false);
                     write_line(out, &format!("info string book move {text}"))?;
                     write_line(out, &format!("bestmove {text}"))?;
                 } else {
-                    self.start(limits, tx, out)?;
+                    self.start(limits, self.hash.clone(), tx, out)?;
                 }
             }
             "stop" => self.stop(),
@@ -296,6 +296,7 @@ impl Engine {
     fn start(
         &mut self,
         limits: Limits,
+        hash: Arc<TranspositionTable>,
         tx: &Sender<Event>,
         out: &mut impl Write,
     ) -> io::Result<()> {
@@ -315,8 +316,7 @@ impl Engine {
                 stop: Arc::new(AtomicBool::new(false)),
                 ponderhit: Arc::new(AtomicBool::new(false)),
             };
-            let result =
-                search_with_table(self.position.clone(), quick, &control, &self.hash, |_| {});
+            let result = search_with_table(self.position.clone(), quick, &control, &hash, |_| {});
             write_line(
                 out,
                 &format_info(&self.position, self.chess960, self.show_wdl, &result.info),
@@ -341,7 +341,6 @@ impl Engine {
             ponderhit: control.ponderhit.clone(),
         };
         let worker_tx = tx.clone();
-        let hash = self.hash.clone();
         let active_hash = hash.clone();
         let handle = thread::Builder::new()
             .name("inphish-search".to_owned())
