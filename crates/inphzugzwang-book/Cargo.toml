@@ -4,5 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
+[features]
+default = ["bundled-book"]
+bundled-book = []
+
 [dependencies]
 inphzugzwang-core = { path = "../inphzugzwang-core" }

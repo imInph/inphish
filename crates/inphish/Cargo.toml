@@ -4,8 +4,12 @@ version = "7.0.0-pre.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
+[features]
+default = ["bundled-book"]
+bundled-book = ["inphzugzwang-book/bundled-book"]
+
 [dependencies]
-inphzugzwang-book = { path = "../inphzugzwang-book" }
+inphzugzwang-book = { path = "../inphzugzwang-book", default-features = false }
 inphzugzwang-core = { path = "../inphzugzwang-core" }
 inphzugzwang-eval = { path = "../inphzugzwang-eval" }
 inphzugzwang-nnue = { path = "../inphzugzwang-nnue" }

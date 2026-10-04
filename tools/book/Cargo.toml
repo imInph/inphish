@@ -7,4 +7,4 @@ publish = false
 
 [dependencies]
 inphzugzwang-core = { path = "../../crates/inphzugzwang-core" }
-inphzugzwang-book = { path = "../../crates/inphzugzwang-book" }
+inphzugzwang-book = { path = "../../crates/inphzugzwang-book", default-features = false }

@@ -64,14 +64,17 @@ pub fn key(position: &Position) -> u64 {
 }
 
 /// inphish's own book, bundled in the binary.
+#[cfg(feature = "bundled-book")]
 const BUILT_IN: &[u8] = include_bytes!("../book/inphish.bin");
+#[cfg(not(feature = "bundled-book"))]
+const BUILT_IN: &[u8] = &[];
 
 /// A Polyglot book held in memory.
 pub struct Book {
     bytes: Cow<'static, [u8]>,
 }
 
-/// The bundled book, checked on first use.
+/// The bundled book, checked on first use, or an empty book when it was left out.
 pub fn built_in() -> &'static Book {
     static BOOK: OnceLock<Book> = OnceLock::new();
     BOOK.get_or_init(|| Book::new(BUILT_IN).expect("bundled book is valid"))

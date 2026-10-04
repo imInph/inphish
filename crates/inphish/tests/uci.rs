@@ -530,16 +530,24 @@ fn uci_own_book() {
     engine.send("go depth 1");
     engine.until("info depth 1");
     engine.until("bestmove ");
-    // The bundled book answers at once.
     engine.send("setoption name OwnBook value true");
     engine.send("setoption name Book Best Move value true");
     engine.send("go wtime 60000 btime 60000");
-    let book = engine.until("info string book move ");
-    let best = engine.until("bestmove ");
-    assert_eq!(
-        book["info string book move ".len()..],
-        best["bestmove ".len()..]
-    );
+    #[cfg(feature = "bundled-book")]
+    {
+        let book = engine.until("info string book move ");
+        let best = engine.until("bestmove ");
+        assert_eq!(
+            book["info string book move ".len()..],
+            best["bestmove ".len()..]
+        );
+    }
+    #[cfg(not(feature = "bundled-book"))]
+    {
+        engine.until("info string no bundled book");
+        engine.until("info depth 1");
+        assert_ne!(engine.until("bestmove "), "bestmove 0000");
+    }
     // Analysis and positions past the book depth search instead.
     engine.send("go depth 1 infinite");
     engine.until("info depth 1");

@@ -482,6 +482,13 @@ impl Engine {
         } else if name == "ownbook" {
             if let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>() {
                 self.own_book = enabled;
+                #[cfg(not(feature = "bundled-book"))]
+                if enabled && self.book_file.is_none() {
+                    return Some(
+                        "info string no bundled book; set BookFile to use an opening book"
+                            .to_owned(),
+                    );
+                }
             }
         } else if name == "bookfile" {
             let path = value_at.map_or(String::new(), |index| words[index + 1..].join(" "));
