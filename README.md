@@ -66,7 +66,24 @@ The large steps are the preview to 0.1.0, which added the tapered evaluation and
 At 1+0.01 MaiEngine and Mai V2 lose many games on time, so their results say little about playing strength; inphish lost no game on time. 6.1.0 also scored 20 of 20 against Morstilia V6, MaiEngine and Mai V2. 6.2.0 was checked against Stockfish 19, Mai v3 and the Morstilia 7.0.0 release only.
 
 <details>
-<summary>Pre-release: 7.0.0-pre.1</summary>
+<summary>Pre-release: 7.0.0-pre.2 candidate</summary>
+
+**7.0.0-pre.2 is prepared locally, not yet tagged or published.** It builds on pre.1's SFNNv17 network, `nn-252f33942263`, with the same default search and bench signature, **1525540**.
+
+- `Ponder` enables predicted replies for GUIs that let the engine think during the opponent's turn. Completed searches, including terminal positions, wait for `ponderhit` or `stop`.
+- `EvalFile` loads external networks with the same SFNNv17 architecture. Empty or `<empty>` restores the bundled network; a failed load keeps the previous network. Running and queued searches retain their original weights and search tables.
+- The bundled opening book can be excluded at build time, reducing the local binary from about 203 MB to 100 MB. `BookFile` still loads external Polyglot books; the normal build still includes the book.
+- `UCI_ShowWDL` uses a new fit for the bundled network at 1+0.01: 1,742 sparse evaluations from 120 games against nearby, unweakened opponents, with equal weight per game. A training-only fit improved log loss on 24 held-out games from 0.677 to 0.534. These estimates do not calibrate other networks loaded through `EvalFile`.
+
+To build without the bundled book:
+
+```sh
+cargo build --release -p inphish --no-default-features
+```
+
+Revision `f0d6a93` scored **23/40 against pre.1: 10 wins, 4 losses and 26 draws**, at 1+0.01, Hash 16, one thread, books off, paired balanced openings and concurrency 2. All games ended normally. This is a regression check, not a measured strength gain. The new WDL model also improved log loss on these 40 new games from 0.596 to 0.342. Both network-loading paths match the 2,253 reference positions exactly; the full local release checks and the smaller build's UCI checks pass.
+
+An accumulator prefetch experiment was removed: four alternating speed trials at Hash 64, one thread and ten seconds on each of two positions averaged 844,070 nodes per second without it and 842,560 with it, with no repeatable gain.
 
 [inphish v7.0.0-pre.1](https://github.com/imInph/inphish/releases/tag/v7.0.0-pre.1) is a test build with the network of Stockfish's development build, `nn-252f33942263`, which drops the piece-square output; inphish matches that build exactly on 2,253 positions. It may change before Stockfish's next release. The search is 6.2.0's. It scored 21 of 40 against 6.2.0; against Stockfish 19 at full strength 6 of 20, then 16.5 of 40 in a second run, 22.5 of 60 in all.
 
